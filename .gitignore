@@ -1,0 +1,46 @@
+# Gradle
+.gradle/
+build/
+/app/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin 2.x session/analysis directory
+.kotlin/
+
+# Local, machine-specific, or secret
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Build outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Crash/profiling dumps and logs
+*.hprof
+*.log
+/app/release/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deliberately NOT ignored:
+#   app/schemas/            Room's exported schemas are the migration record and
+#                           must be committed, or a future migration cannot be
+#                           validated against the shipped database.
+#   gradle/wrapper/         the wrapper jar and properties pin the build.

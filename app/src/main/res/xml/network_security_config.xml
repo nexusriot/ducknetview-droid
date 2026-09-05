@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Cleartext is permitted because the endpoints this app talks to are the
+         user's own and are routinely plain HTTP: an alert webhook pointed at a
+         LAN collector, and the loopback/LAN targets of the self-scan and
+         latency probes. The app's own fixed endpoint (ipify) is HTTPS, and no
+         user data is sent to third parties, so enforcing TLS here would break
+         a real feature while protecting nothing. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
