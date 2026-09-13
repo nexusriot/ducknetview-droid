@@ -3,8 +3,14 @@ package com.vlad.ducknetview.ui.components
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -56,6 +62,12 @@ fun AdaptiveScaffold(
     val useRail = widthDp >= RAIL_MIN_WIDTH_DP
     Scaffold(
         modifier = modifier.then(Modifier.testTag("scaffold")),
+        // The top inset is applied once, to the row below, so that everything
+        // in it clears the status bar — including the rail and the status
+        // banner, which sit outside the padding handed to the screen content
+        // and would otherwise be drawn underneath the system clock.
+        contentWindowInsets = WindowInsets.systemBars
+            .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
         bottomBar = {
             if (!useRail) {
                 NavigationBar(modifier = Modifier.testTag("nav:bar")) {
@@ -73,7 +85,11 @@ fun AdaptiveScaffold(
             }
         },
     ) { padding ->
-        Row(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.statusBars)
+        ) {
             if (useRail) {
                 NavigationRail(
                     modifier = Modifier

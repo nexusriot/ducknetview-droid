@@ -90,6 +90,8 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK) {
                         DuckVpnService.start(this)
+                    } else {
+                        vm.onVpnConsentDenied()
                     }
                 }
                 val permissionLauncher = rememberLauncherForActivityResult(
@@ -100,8 +102,12 @@ class MainActivity : ComponentActivity() {
                     if (wantsVpn) {
                         vm.consumeVpnStartRequest()
                         val intent = VpnService.prepare(this@MainActivity)
-                        if (intent != null) vpnLauncher.launch(intent)
-                        else DuckVpnService.start(this@MainActivity)
+                        if (intent != null) {
+                            vm.onVpnConsentRequested()
+                            vpnLauncher.launch(intent)
+                        } else {
+                            DuckVpnService.start(this@MainActivity)
+                        }
                     }
                 }
                 LaunchedEffect(wantsPermission) {

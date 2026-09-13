@@ -151,9 +151,9 @@ val ONBOARDING_LINES: List<Pair<String, String>> = listOf(
         "WireGuard, Tailscale or a work profile VPN is connected. API mode keeps " +
         "working, and the top bar always says which mode you are in.",
     "What it costs" to
-        "Capture does not slow the link, but it is roughly eight times the CPU per " +
-        "megabyte, which shows up as battery. Turn it on when you want the " +
-        "connection table, off when you do not.",
+        "Capture costs roughly five times the CPU per megabyte, which shows up as " +
+        "battery, and on a fast link it gives up around a tenth of the download " +
+        "speed. Turn it on when you want the connection table, off when you do not.",
 )
 
 /**

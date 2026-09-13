@@ -16,7 +16,6 @@ import com.vlad.ducknetview.domain.baseline.Baseline
 import com.vlad.ducknetview.domain.events.EventEngine
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.Event
-import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.LatencySample
 import com.vlad.ducknetview.domain.model.NetSnapshot
@@ -125,7 +124,13 @@ class EngineController(
             }
         }
         registerScreenReceiver()
-        loop = scope.launch { pollLoop() }
+        // Seed the session dedupe from the hosts already on record before the
+        // first tick can report them, so a restart is not a burst of "first
+        // contact" for hosts this device has talked to for weeks.
+        loop = scope.launch {
+            runCatching { eventEngine.seedSeenHosts(hostSeen.known()) }
+            pollLoop()
+        }
     }
 
     fun stop() {
@@ -260,8 +265,11 @@ class EngineController(
         val prev = prevSnapshot
         val produced = ArrayList<Event>()
         produced += eventEngine.diff(prev, snap, baseline, watchlist)
+        // Hosts the engine has just reported on for the first time go into the
+        // persistent store, so the next process start seeds its dedupe from
+        // them instead of replaying every known host as first contact.
+        for (host in eventEngine.lastNewHosts) hostSeen.isNew(host, snap.atMillis)
         produced += alertRules.evaluate(snap, settings, now)
-        produced += firstContactEvents(snap)
         if (produced.isNotEmpty()) {
             events.record(produced)
             for (e in produced) {
@@ -272,31 +280,6 @@ class EngineController(
             }
         }
         prevSnapshot = snap
-    }
-
-    /**
-     * The first connection to each public host is worth one line in the log.
-     * Persisted rather than in-memory so a process restart does not replay
-     * every existing host as brand new.
-     */
-    private suspend fun firstContactEvents(snap: NetSnapshot): List<Event> {
-        val out = ArrayList<Event>()
-        var emitted = 0
-        for (c in snap.conns) {
-            if (c.scope != com.vlad.ducknetview.domain.model.Scope.PUBLIC) continue
-            if (emitted >= FIRST_CONTACT_CAP) break
-            if (hostSeen.isNew(c.remoteAddr, snap.atMillis)) {
-                emitted++
-                out += Event(
-                    at = snap.atMillis,
-                    level = EventLevel.INFO,
-                    kind = EventKind.NEW_PUBLIC_HOST,
-                    subject = c.remoteDisplay(true),
-                    detail = "first contact by ${c.appLabel.ifEmpty { "uid ${c.uid}" }}",
-                )
-            }
-        }
-        return out
     }
 
     private suspend fun refreshLatency() {
@@ -343,7 +326,6 @@ class EngineController(
     companion object {
         private const val LATENCY_INTERVAL_MS = 15_000L
         private const val USAGE_INTERVAL_MS = 120_000L
-        private const val FIRST_CONTACT_CAP = 20
         val BOOT_ELAPSED: Long get() = SystemClock.elapsedRealtime()
     }
 }

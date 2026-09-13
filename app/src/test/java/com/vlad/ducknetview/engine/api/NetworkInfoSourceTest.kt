@@ -82,7 +82,9 @@ class NetworkInfoSourceTest {
     @Test
     fun `an unflagged all-destinations route still counts as the default`() {
         val routes = listOf(RouteRow("::/0", "fe80::1", "wlan0", false))
-        assertEquals("fe80::1", NetworkInfoSource.gatewayOf(routes))
+        // Zoned because it is link-local; this test is about the fallback
+        // selection, not the zone, which has its own test below.
+        assertEquals("fe80::1%wlan0", NetworkInfoSource.gatewayOf(routes))
     }
 
     @Test
@@ -91,6 +93,33 @@ class NetworkInfoSourceTest {
         assertNull(NetworkInfoSource.gatewayText(InetAddress.getByName("::")))
         assertNull(NetworkInfoSource.gatewayText(null))
         assertEquals("10.0.0.1", NetworkInfoSource.gatewayText(InetAddress.getByName("10.0.0.1")))
+    }
+
+    /**
+     * A link-local gateway needs its interface zone: `connect()` to a scopeless
+     * `fe80::` fails with EINVAL, which made the gateway latency probe report a
+     * permanent "unreachable" on every dual-stack network. Android's RouteInfo
+     * supplies no zone, so it comes from the route's own interface.
+     */
+    @Test
+    fun `a link-local gateway carries the zone that makes it connectable`() {
+        val routes = listOf(RouteRow("::/0", "fe80::1", "wlan0", true))
+        assertEquals("fe80::1%wlan0", NetworkInfoSource.gatewayOf(routes))
+    }
+
+    @Test
+    fun `a routable gateway is left alone and a zone is never doubled`() {
+        assertEquals(
+            "192.168.1.1",
+            NetworkInfoSource.gatewayOf(listOf(RouteRow("0.0.0.0/0", "192.168.1.1", "wlan0", true))),
+        )
+        // fec0:: is site-local, outside fe80::/10, and must not be zoned.
+        assertEquals(
+            "fec0::1",
+            NetworkInfoSource.gatewayOf(listOf(RouteRow("::/0", "fec0::1", "wlan0", true))),
+        )
+        assertEquals("fe80::1%wlan0", NetworkInfoSource.zoned("fe80::1%wlan0", "eth0"))
+        assertEquals("fe80::1", NetworkInfoSource.zoned("fe80::1", ""))
     }
 
     @Test

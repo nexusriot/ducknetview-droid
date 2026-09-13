@@ -214,6 +214,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
                 tabFlow.value = Tab.fromRoute(s.lastTab)
             }
         }
+        // Retire the "starting capture" / consent messages once the service is
+        // actually up: a banner still announcing the attempt while the engine
+        // is running is the stalest thing on the screen.
+        viewModelScope.launch {
+            VpnBridge.running.collect { running ->
+                if (running && statusFlow.value in VPN_START_MESSAGES) status("capture running")
+            }
+        }
         deps.engine.start()
     }
 
@@ -373,9 +381,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
     }
 
     override fun startVpn() {
-        status("requesting VPN permission")
+        // Deliberately not "requesting VPN permission": consent is only asked
+        // for once, so on every later start that message would sit in the
+        // banner describing something that never happened. MainActivity knows
+        // which path was taken and reports it through the callbacks below.
+        status("starting capture")
         vpnStartRequest.value = true
     }
+
+    /** Consent is actually being asked for: only the first activation. */
+    fun onVpnConsentRequested() = status("requesting VPN permission")
+
+    /** The consent dialog came back refused, so capture cannot start. */
+    fun onVpnConsentDenied() = status("capture needs VPN permission")
 
     override fun stopVpn() {
         com.vlad.ducknetview.engine.vpn.DuckVpnService.stop(getApplication())
@@ -612,4 +630,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
     }
 
     private fun plural(n: Int, word: String) = if (n == 1) word else "${word}s"
+
+    private companion object {
+        /** Transient messages that the running engine supersedes. */
+        val VPN_START_MESSAGES = setOf(
+            "starting capture",
+            "requesting VPN permission",
+            "capture needs VPN permission",
+        )
+    }
 }

@@ -135,10 +135,17 @@ counts. This is a monitor, not a sniffer.
 
 ```bash
 export JAVA_HOME=/opt/android-studio/jbr
+export ANDROID_HOME=$HOME/Android/Sdk
 ./gradlew assembleDebug
 ```
 
-1105 unit tests and 19 instrumented tests; see **Running the tests** and
+`local.properties` is deliberately not committed, so a fresh clone has no
+`sdk.dir` and the build stops at *"SDK location not found"* until `ANDROID_HOME`
+points at an SDK with **platform 35** and **platform-tools** installed. Writing
+`sdk.dir=/path/to/Sdk` into `local.properties` works too; the environment
+variable is preferred because it does not tempt anyone to commit the file.
+
+1110 unit tests and 19 instrumented tests; see **Running the tests** and
 **Test on a device**.
 
 ## Test on a device
@@ -151,9 +158,17 @@ Installs both APKs, grants permissions, pre-authorises the VPN consent dialog
 via `appops` (an instrumented test cannot tap it), smoke-launches, dumps the
 visible UI, and runs the instrumented suites.
 
+The script **fails the run when the suite fails**. That is worth stating because
+it did not always: `am instrument` exits 0 whether the tests passed or not, so
+the verdict has to be read out of its output, and until that was fixed a red
+suite still printed `done` and exited 0. It also recovers from the one install
+failure that is not a real failure — a debug APK built on another machine cannot
+upgrade the installed one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so the script
+removes the stale package and retries rather than stopping.
+
 Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 19
-instrumented test methods; **17 do real work on a default run and all pass**,
-and the remaining two skip unless given their arguments.
+instrumented test methods; **17 do real work on a default run and all pass**
+(171 s), and the remaining two skip unless given their arguments.
 
 | Suite | Tests | Notes |
 |---|---|---|
@@ -177,7 +192,9 @@ Benchmark:
 
 Serves a generated blob from this machine over the LAN and measures the proxy
 against a direct baseline. A LAN source is the point: measuring against a CDN
-measures the CDN.
+measures the CDN. The host must be on the device's subnet — the script binds
+the LAN address rather than localhost for exactly that reason — and it clears
+logcat first so the measurements printed are the ones it just produced.
 
 Linux hosts need a udev rule before adb can claim a device:
 
@@ -249,11 +266,12 @@ Enable it in Settings and the app serves Prometheus text on the LAN:
 curl http://<device-ip>:9187/metrics
 ```
 
-**42 metric families** (all gauges, all prefixed `ducknetview_`) covering
+**43 metric families** (all gauges, all prefixed `ducknetview_`) covering
 throughput, per-network counters, connections by scope, listeners by exposure,
-off-baseline count, watchlist hits, latency, and per-app / per-host series. The
-sample count varies with how many networks, apps and hosts are present — an
-idle tablet served 47.
+off-baseline count, watchlist hits, latency, per-app / per-host series, and the
+truncation gauge below. The sample count varies with how many networks, apps and
+hosts are present — an idle tablet scraped over the LAN served 46 samples in
+7.6 kB. `PrometheusTest` pins the family count so this number cannot drift again.
 
 Per-app and per-host series are capped at 50 each, with an explicit
 `ducknetview_series_truncated` gauge saying how many were dropped; silent
@@ -267,22 +285,47 @@ meant for a trusted network only.
 ## Capture cost
 
 Measured on the PRITOM M10 over a LAN HTTP source, three alternating rounds
-with the UI foregrounded in both arms (`./run-benchmark.sh <serial> 24`):
+with the UI foregrounded in both arms (`./run-benchmark.sh <serial> 24`), on a
+5 GHz link that tops out near 11 MiB/s. Two independent runs, medians:
 
-| | direct | captured |
-|---|---|---|
-| Throughput (median) | 5.76 MiB/s | 5.94 MiB/s |
-| CPU per MiB (median) | 0.070 s | 0.570 s |
+| | direct | captured | |
+|---|---|---|---|
+| Throughput | 11.06 / 11.09 MiB/s | 9.76 / 10.02 MiB/s | ratio **0.88 / 0.90** |
+| CPU per MiB | 0.074 / 0.068 s | 0.366 / 0.373 s | **5.0× / 5.5×** |
 
-**Throughput is unaffected** — the Wi-Fi link is the bottleneck at ~6 MiB/s, not
-the proxy, and the captured arm was actually the steadier of the two. **CPU is
-8.1× higher per MiB**, which is the real cost and the thing that will drain a
-battery.
+**CPU is roughly 5× higher per MiB**, which is the real cost and the thing that
+will drain a battery. **Throughput costs about 10%.** Captured CPU per MiB
+repeats to within 2% across runs; the *multiplier* is the noisier figure only
+because the direct baseline it divides by is small, so read it as "about five",
+not as 4.97.
+
+An earlier run on a ~6 MiB/s link reported 8.1× CPU and *no* throughput cost at
+all. Both halves of that moved: the buffer pooling below took the CPU multiplier
+down, and the faster link removed the bottleneck that had been masking the
+proxy's own ceiling. **"Capture does not slow the link" was a property of the
+slow link, not of the proxy** — on a link fast enough to expose it, the proxy is
+the limit.
+
+Per-round numbers, since the medians hide the shape (cold round first):
+
+| round | direct MiB/s | captured MiB/s | direct s/MiB | captured s/MiB |
+|---|---|---|---|---|
+| 0 | 10.93 / 10.95 | **7.98 / 7.97** | 0.059 / 0.052 | **0.513 / 0.484** |
+| 1 | 11.06 / 11.36 | 11.23 / 10.02 | 0.080 / 0.068 | 0.354 / 0.373 |
+| 2 | 11.40 / 11.09 | 9.76 / 10.32 | 0.074 / 0.073 | 0.366 / 0.332 |
+
+Round 0 is the reproducible one: both runs put the cold captured arm at 7.97–7.98
+MiB/s and ~0.5 s/MiB, a third slower and a third more expensive than the rounds
+after it, paying for a cold JIT and an empty buffer pool. **The first megabytes
+after capture starts are the worst ones the user will see.** Later rounds vary by
+more than the difference between the arms — captured round 1 of run A came out
+*above* its direct pair — so treat the medians as the result and any single
+warm round as noise.
 
 #### Where that CPU is not
 
 A JVM micro-benchmark against the real codec puts total byte-level codec cost at
-about **1 ms/MiB — under 0.2% of the 570 ms/MiB measured on the tablet**. The
+about **1 ms/MiB — under 0.3% of the 366 ms/MiB now measured on the tablet**. The
 multiplier is therefore *not* in the packet arithmetic. What remains is GC
 pressure on a mobile heap, per-packet syscalls, coroutine/thread handoffs, and
 the structural cost of a userspace relay crossing the kernel boundary three
@@ -294,9 +337,10 @@ copies removed per MiB relayed**, plus ~11x fewer upstream read syscalls and one
 coroutine resume per burst instead of per packet. The poll loop also backs off
 while the screen is off, snapping back on screen-on.
 
-⚠️ **Not yet re-measured on device** — the tablet was disconnected when this
-landed. Re-run `./run-benchmark.sh <serial> 24` to see what it actually bought;
-expect a real but moderate improvement, not an 8x collapse.
+**Re-measured on device**: that work took captured CPU from 0.570 to ~0.37
+s/MiB, a **35% cut**, and the multiplier from 8.1× to about 5×. As predicted it
+is a real but moderate improvement and not an 8x collapse — the remaining cost
+is structural, so the relay's three kernel crossings per byte are now the floor.
 
 The biggest untaken lever is **raising the TUN MTU**, which would cut packets,
 TUN writes and ACKs by roughly 10x at a stroke. It is deliberately not done: it
@@ -322,8 +366,9 @@ normal path) is what the OEM manager permits.
 - The **Quick Settings tile cannot show the VPN consent dialog** (no tile can),
   so the first activation hands off to the app.
 - Capture is a userspace TCP/UDP proxy in Kotlin. It is correct and it respects
-  the peer's window, but it is CPU-bound well below line rate — see
-  **Capture cost** for the measured numbers.
+  the peer's window, but it is CPU-bound well below line rate, and on a link
+  faster than about 10 MiB/s it costs throughput as well — see **Capture cost**
+  for the measured numbers.
 - **No CI** yet, and no F-Droid packaging. Play Store distribution would need
   declared justifications for `VpnService` and `QUERY_ALL_PACKAGES`.
 

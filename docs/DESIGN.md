@@ -46,7 +46,7 @@ active engine can actually answer, and the UI keys off it.
 | ARP/neighbour table | unavailable on Android 10+ | the Routes screen says so explicitly |
 | Retransmit counts | no unprivileged source | column hidden; approximation deliberately parked |
 | `--on-alert` shell hook | no shell | notification + optional webhook POST + broadcast Intent |
-| `--metrics` textfile | no cron | embedded HTTP endpoint, 42 gauge families |
+| `--metrics` textfile | no cron | embedded HTTP endpoint, 43 gauge families |
 | `--from snapshot` | — | SAF picker → frozen UI, reads the TUI's own JSON |
 
 UDP is skipped by the self-scan: it is not reliably detectable by connect-probing.
@@ -69,6 +69,38 @@ cannot disagree with each other.
 descriptor handed to the local kernel, which does not lose segments. Flow
 control *is* implemented: the peer's advertised window must be respected or a
 fast download overruns its receive buffer.
+
+**One producer for `new_public_host`.** There were two: `EventEngine.connEvents`
+deduping in memory, and `EngineController.firstContactEvents` deduping through
+the Room host store. Both ran on the same snapshot, so every new host wrote two
+lines to the log — visible on device as paired entries one second apart. The
+engine is now the only producer, and it is *seeded* from the persisted store at
+start-up (`seedSeenHosts`), reporting back through `lastNewHosts` what the
+caller should persist. That keeps the per-kind cap and suppression the engine
+already owned while gaining the restart-survival the store was added for.
+`HostSeenRepository.known()` existed for exactly this and had no caller — the
+defect class in §8, caught by its own symptom rather than by the guard.
+
+**The gateway is stored with its zone.** The Overview's headline latency read
+"unreachable / connect failed" on every dual-stack network, because the default
+route's next hop there is an IPv6 link-local and `RouteInfo.getGateway()` hands
+back `fe80::…` with no zone on it. That address does not identify a host — the
+same `fe80::` can exist on every interface — so `connect()` returns `EINVAL`,
+which surfaces as a `ConnectException` whose message says neither "refused" nor
+"unreachable" and so fell through to the generic "connect failed". Confirmed on
+device: `nc fe80::…%wlan0 80` connects and `nc fe80::… 80` answers
+`connect: Invalid argument`. `gatewayOf` now attaches the zone from the route's
+own interface, which is by definition where the next hop is reachable, and the
+probe returns 8 ms. The prober itself was never wrong: a refused connect already
+counted as a valid round trip.
+
+**The status banner says what happened, not what was attempted.** `startVpn`
+announced "requesting VPN permission" unconditionally, but consent is asked for
+only once; every later start left that sentence sitting in a banner describing
+something that never occurred. The ViewModel now says "starting capture", and
+`MainActivity` — which is what calls `VpnService.prepare` and therefore the only
+thing that knows — reports consent or refusal. A `VpnBridge.running` collector
+retires the message once the engine is actually up.
 
 **Teardown takes a snapshot before closing.** Two process-killing
 `ConcurrentModificationException`s were found on device: closing flows while
@@ -96,18 +128,36 @@ parties, so enforcing TLS here protected nothing.
 ## 6. Measured cost
 
 On a PRITOM M10 (Android 16 / API 36, arm64), LAN HTTP source, three
-alternating rounds with the UI foregrounded in both arms:
+alternating rounds with the UI foregrounded in both arms, on a 5 GHz link
+topping out near 11 MiB/s. Two independent runs, medians:
 
-- throughput: 5.76 MiB/s direct vs 5.94 MiB/s captured — **ratio 1.03**, the
-  proxy does not throttle; the Wi-Fi link is the bottleneck
-- CPU: 0.070 vs 0.570 s/MiB — **8.1×**
+- throughput: 11.06 / 11.09 MiB/s direct vs 9.76 / 10.02 captured — **ratio
+  0.88 / 0.90**
+- CPU: 0.074 / 0.068 vs 0.366 / 0.373 s/MiB — **5.0× / 5.5×**
+
+Captured CPU per MiB repeats to within 2%; the multiplier is noisier only
+because its divisor is small, so the honest statement is "about 5×".
 
 A JVM micro-benchmark then put total byte-level codec cost at ~1 ms/MiB, i.e.
-**under 0.2%** of that 570 ms/MiB. The multiplier is not in the packet
+**under 0.3%** of that ~370 ms/MiB. The multiplier is not in the packet
 arithmetic; it is GC pressure, per-packet syscalls, coroutine handoffs, and the
 structural triple kernel crossing of a userspace relay. Buffer pooling and
-reused parse scratch since removed ~1400 allocations and ~700 copies per MiB;
-**that change is not yet re-measured on device.**
+reused parse scratch removed ~1400 allocations and ~700 copies per MiB, and the
+re-measurement says that bought **0.570 → ~0.37 s/MiB, a 35% cut**, taking the
+multiplier from 8.1× to about 5×.
+
+The cold round is the one that reproduces exactly: both runs put captured
+round 0 at 7.97–7.98 MiB/s and ~0.5 s/MiB against ~10 MiB/s and ~0.35 s/MiB for
+the warm rounds. A cold JIT and an empty buffer pool are a third of the
+throughput and a third again of the CPU, which is what the user meets in the
+first seconds after switching capture on.
+
+**The throughput conclusion was revised by the same run.** The earlier ratio of
+1.03 was measured on a ~6 MiB/s link and read as "the proxy does not throttle".
+On a link fast enough to expose it, capture gives up ~12%: the old number
+described the Wi-Fi bottleneck, not the proxy. A benchmark whose bottleneck sits
+outside the thing being measured reports the bottleneck — the same reason this
+harness insists on a LAN source instead of a CDN, applied one layer further in.
 
 The largest untaken lever is raising the TUN MTU (~10× fewer packets, writes and
 ACKs). It changes what every app puts on the wire through the TUN and needs a
@@ -126,6 +176,25 @@ device to validate.
 - **Compose's `TestTag` merge policy keeps the first tag**, so a component
   writing `Modifier.testTag(default).then(modifier)` silently discards every
   caller-supplied tag.
+- **`targetSdk = 35` means edge-to-edge is compulsory on Android 15+**, and
+  nothing warns about it. `Scaffold` hands its insets to the content lambda
+  only, so the navigation rail and the status banner — which live outside that
+  padding — were drawn under the system clock. The inset is now applied once to
+  the row that holds all three, with the scaffold's own top inset removed so it
+  is not paid twice. Robolectric renders with no system bars, so the whole suite
+  passed while the device was visibly wrong: this class of bug needs a
+  screenshot, not a test.
+- **`am instrument` exits 0 even when tests fail.** The verdict is in its output
+  (`OK (n tests)` versus `FAILURES!!!`), which is why `run-device-e2e.sh` now
+  parses the log it captures instead of trusting the exit status.
+- **A leaked benchmark server reports a plausible lie.** `run-benchmark.sh`
+  backgrounded its HTTP server in a subshell and trapped `kill %1`, which killed
+  the subshell and left python holding the port with its blob directory already
+  deleted. The next run could not bind, the survivor answered 404, and because
+  the test swallows transfer errors the result came back as `0.00 MiB/s` with a
+  `cpu_multiplier` computed from zeros — a number, not an error. The server is
+  now `exec`ed so `$!` is the process that must die, the port is checked before
+  binding, and the blob is fetched once before three rounds are spent on it.
 
 ## 8. Recurring defect class, and the guard
 

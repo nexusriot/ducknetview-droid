@@ -228,12 +228,41 @@ class NetworkInfoSource(context: Context) {
         }
 
         /** The default route's next hop, or null when the link is point-to-point. */
-        internal fun gatewayOf(routes: List<RouteRow>): String? =
-            routes.firstOrNull { it.isDefault && !it.gateway.isNullOrBlank() }?.gateway
+        internal fun gatewayOf(routes: List<RouteRow>): String? {
+            val route = routes.firstOrNull { it.isDefault && !it.gateway.isNullOrBlank() }
                 ?: routes.firstOrNull {
                     (it.destination == "0.0.0.0/0" || it.destination == "::/0") &&
                         !it.gateway.isNullOrBlank()
-                }?.gateway
+                }
+                ?: return null
+            return zoned(route.gateway!!, route.iface)
+        }
+
+        /**
+         * An IPv6 link-local next hop does not identify a host on its own: the
+         * same `fe80::` address can exist on every interface, so `connect()` to
+         * a scopeless one fails with `EINVAL`. On a dual-stack network the
+         * default route's next hop is normally exactly that, which made the
+         * Overview's gateway latency read a permanent "unreachable" — the one
+         * hop the app can actually measure, and it measured nothing.
+         *
+         * `RouteInfo.getGateway()` hands back an address with no zone on it, so
+         * it is taken from the route's own interface, which is by definition
+         * the one the next hop is reachable through.
+         */
+        internal fun zoned(gateway: String, iface: String): String =
+            if (iface.isNotBlank() && '%' !in gateway && isIpv6LinkLocal(gateway)) {
+                "$gateway%$iface"
+            } else {
+                gateway
+            }
+
+        /** fe80::/10, i.e. the first three nibbles in fe8..feb. */
+        private fun isIpv6LinkLocal(addr: String): Boolean {
+            if (':' !in addr) return false
+            val head = addr.lowercase().take(3)
+            return head == "fe8" || head == "fe9" || head == "fea" || head == "feb"
+        }
 
         /** An on-link route reports 0.0.0.0/:: as its "gateway"; that is not one. */
         internal fun gatewayText(addr: InetAddress?): String? {

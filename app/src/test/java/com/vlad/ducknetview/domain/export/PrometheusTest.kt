@@ -66,6 +66,22 @@ class PrometheusTest {
         assertEquals(help.toSet(), type.toSet())
     }
 
+    /**
+     * The family count is quoted in README.md and docs/DESIGN.md, and drifted
+     * from the code once already: `series_truncated` was added, described in
+     * the prose, and never added to the total. Pin it here so adding a family
+     * fails until the number that documents it is updated too.
+     */
+    @Test
+    fun theFamilyCountIsWhatTheDocsClaim() {
+        assertEquals(
+            "README.md and docs/DESIGN.md say how many families this emits; " +
+                "update both when this number changes",
+            43,
+            families(Prometheus.render(fullSnapshot())).size,
+        )
+    }
+
     @Test
     fun everySampleBelongsToADeclaredFamily() {
         val out = Prometheus.render(fullSnapshot())

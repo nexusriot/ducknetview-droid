@@ -200,6 +200,43 @@ class EventEngineTest {
         assertTrue(again[0].subject.contains("1.1.1.1"))
     }
 
+    /**
+     * The engine is the only producer of NEW_PUBLIC_HOST, so its session-only
+     * dedupe has to be seedable from the persisted host store; otherwise every
+     * process start replays hosts this device has known for weeks as first
+     * contact. [EventEngine.lastNewHosts] is what the caller persists.
+     */
+    @Test
+    fun seededHostsAreNotReportedAsFirstContact() {
+        val engine = EventEngine()
+        engine.seedSeenHosts(listOf("8.8.8.8"))
+        val cur = Fixtures.snapshot(
+            conns = listOf(
+                Fixtures.conn(key = "1", remoteAddr = "8.8.8.8"),
+                Fixtures.conn(key = "2", remoteAddr = "1.1.1.1"),
+            ),
+        )
+        val events = of(engine.diff(null, cur, noBaseline, noWatchlist), EventKind.NEW_PUBLIC_HOST)
+        assertEquals(1, events.size)
+        assertTrue(events[0].subject.contains("1.1.1.1"))
+    }
+
+    @Test
+    fun newlySeenHostsAreReportedForPersistenceAndResetEachDiff() {
+        val engine = EventEngine()
+        val first = Fixtures.snapshot(
+            atMillis = 1,
+            conns = listOf(Fixtures.conn(key = "1", remoteAddr = "8.8.8.8")),
+        )
+        engine.diff(null, first, noBaseline, noWatchlist)
+        assertEquals(listOf("8.8.8.8"), engine.lastNewHosts)
+
+        // The same host again is not news, and must not be re-offered for
+        // persistence on every subsequent tick.
+        engine.diff(first, first, noBaseline, noWatchlist)
+        assertTrue(engine.lastNewHosts.isEmpty())
+    }
+
     @Test
     fun privateAndLoopbackRemotesAreNotNewPublicHosts() {
         val engine = EventEngine()

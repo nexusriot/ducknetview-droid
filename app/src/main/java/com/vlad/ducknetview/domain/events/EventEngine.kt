@@ -26,6 +26,24 @@ class EventEngine(
     private val seenWatched = LinkedHashSet<String>()
     private val reportedOffBaseline = LinkedHashSet<String>()
 
+    private val newHosts = ArrayList<String>()
+
+    /**
+     * Public addresses first seen during the most recent [diff]. The caller
+     * persists these so "first contact" survives a process restart; the set
+     * above only survives the session. Populated even when the per-kind cap
+     * suppressed the event, because the host has still been reported on.
+     */
+    val lastNewHosts: List<String> get() = newHosts
+
+    /**
+     * Teaches the session dedupe about hosts contacted before this process
+     * started, so a restart does not replay every known host as first contact.
+     */
+    fun seedSeenHosts(hosts: Collection<String>) {
+        for (h in hosts) if (h.isNotEmpty()) seenHostAdd(seenHosts, h)
+    }
+
     fun diff(
         prev: NetSnapshot?,
         cur: NetSnapshot,
@@ -33,6 +51,7 @@ class EventEngine(
         watchlist: Watchlist,
     ): List<Event> {
         val rec = Recorder(cur.atMillis, perKindCap)
+        newHosts.clear()
         serviceEvents(prev, cur, baseline, rec)
         connEvents(cur, watchlist, rec)
         networkEvents(prev, cur, rec)
@@ -44,6 +63,7 @@ class EventEngine(
         seenHosts.clear()
         seenWatched.clear()
         reportedOffBaseline.clear()
+        newHosts.clear()
     }
 
     private fun serviceEvents(
@@ -146,11 +166,12 @@ class EventEngine(
             // One event per remote host per session: a browser opens dozens of
             // connections to the same endpoint and only the first is news.
             if (IpScope.of(remote) == Scope.PUBLIC && seenHostAdd(seenHosts, remote)) {
+                newHosts.add(remote)
                 rec.add(
                     EventLevel.INFO,
                     EventKind.NEW_PUBLIC_HOST,
                     c.remoteDisplay(revDns = true),
-                    detail(c.appLabel, c.service),
+                    detail("first contact by ${c.appLabel.ifBlank { "uid ${c.uid}" }}", c.service),
                 )
             }
         }
