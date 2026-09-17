@@ -70,7 +70,9 @@ fun SettingsScreen(
             }
             Text(
                 if (state.vpnAvailable) {
-                    "The capture engine is a local, loopback-only VPN. It is what makes the " +
+                    "The capture engine is a VPN that terminates on this device — no " +
+                        "remote server, no tunnel off the phone. Traffic is parsed and " +
+                        "counted here and relayed onward as normal. It is what makes the " +
                         "connection table, per-connection bytes and RTT possible."
                 } else {
                     "Another VPN is active. Android allows only one VPN at a time, so the " +
@@ -255,7 +257,7 @@ fun SettingsScreen(
                         "The live device is paused until you close it.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag("settings:snapshot-open"),
+                    modifier = Modifier.testTag("settings:snapshot-frozen"),
                 )
                 TextButton(
                     onClick = { actions.closeSnapshot() },

@@ -20,23 +20,41 @@ class SessionTotalsTest {
     }
 
     @Test
-    fun grandTotalsFollowTheAppPath() {
+    fun grandTotalsFollowTheDevicePath() {
         val t = SessionTotals()
-        t.add(10, "A", 100, 20)
-        t.add(11, "B", 5, 5)
+        t.addDevice(100, 20)
+        t.addDevice(5, 5)
         assertEquals(105, t.sessionRx)
         assertEquals(25, t.sessionTx)
         assertEquals(130, t.sessionTotal)
     }
 
+    /**
+     * The flow paths must leave the grand total alone. They only see traffic in
+     * capture mode, so a grand total fed from them reads a flat zero in API
+     * mode, and adding them on top of the device counters in capture mode would
+     * count the same bytes twice.
+     */
     @Test
-    fun hostTotalsDoNotDoubleCountTheGrandTotal() {
+    fun neitherAppNorHostPathTouchesTheGrandTotal() {
         val t = SessionTotals()
         t.addConn(10, "A", "8.8.8.8", 100, 20)
-        assertEquals(100, t.sessionRx)
-        assertEquals(20, t.sessionTx)
+        assertEquals(0, t.sessionTotal)
         assertEquals(120, t.host("8.8.8.8")!!.total)
         assertEquals(120, t.app(10)!!.total)
+    }
+
+    @Test
+    fun theGrandTotalIsIndependentOfWhetherFlowsAreVisible() {
+        val apiMode = SessionTotals()
+        apiMode.addDevice(1_000, 400)
+
+        val captureMode = SessionTotals()
+        captureMode.addDevice(1_000, 400)
+        captureMode.addConn(10, "A", "8.8.8.8", 900, 380)
+
+        assertEquals(apiMode.sessionTotal, captureMode.sessionTotal)
+        assertEquals(1_400, captureMode.sessionTotal)
     }
 
     @Test
@@ -44,6 +62,7 @@ class SessionTotalsTest {
         val t = SessionTotals()
         t.add(10, "A", 0, 0)
         t.addHost("8.8.8.8", 0, 0)
+        t.addDevice(0, 0)
         assertEquals(0, t.appCount)
         assertEquals(0, t.hostCount)
         assertEquals(0, t.sessionTotal)
@@ -99,14 +118,13 @@ class SessionTotalsTest {
         for (i in 1..4) t.add(i, "app-$i", i.toLong(), 0)
         assertEquals(2, t.appCount)
         assertEquals(listOf("app-4", "app-3"), t.topApps(5).map { it.label })
-        // The grand total keeps everything that was ever booked.
-        assertEquals(10, t.sessionRx)
     }
 
     @Test
     fun clearResetsEverything() {
         val t = SessionTotals()
         t.addConn(10, "A", "8.8.8.8", 100, 100)
+        t.addDevice(100, 100)
         t.clear()
         assertEquals(0, t.sessionTotal)
         assertEquals(0, t.appCount)

@@ -1,6 +1,7 @@
 package com.vlad.ducknetview.ui.screens
 
 import com.vlad.ducknetview.domain.usage.DailyUsage
+import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -51,5 +52,18 @@ fun busiestDay(days: List<DailyUsage>): DailyUsage? =
 fun dailyAverage(days: List<DailyUsage>): Long =
     if (days.isEmpty()) 0L else days.sumOf { it.total } / days.size
 
-/** Day numbers are timezone-free, so [LocalDate.ofEpochDay] needs no clock. */
-fun formatDay(dayEpoch: Long): String = LocalDate.ofEpochDay(dayEpoch).format(DAY_FORMAT)
+/**
+ * Day numbers are timezone-free, so [LocalDate.ofEpochDay] needs no clock.
+ *
+ * Total on purpose. `ofEpochDay` throws for anything outside its range, and a
+ * row carrying a millisecond timestamp instead of a day number used to take the
+ * whole app down the moment the usage screen composed it. A formatter is the
+ * wrong place to discover a unit mismatch, so an unrenderable value is labelled
+ * rather than thrown: the screen stays up and the bad value is visible.
+ */
+fun formatDay(dayEpoch: Long): String =
+    try {
+        LocalDate.ofEpochDay(dayEpoch).format(DAY_FORMAT)
+    } catch (e: DateTimeException) {
+        "day $dayEpoch"
+    }

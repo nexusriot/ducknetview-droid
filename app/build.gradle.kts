@@ -125,4 +125,8 @@ dependencies {
     // removed in API 36; Compose's performClick goes through it on device.
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    // MigrationTestHelper reads the exported schemas out of androidTest assets
+    // (wired above) and runs the migration on the device's own SQLite, which is
+    // the only place a stored-data migration can honestly be proven.
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
 }

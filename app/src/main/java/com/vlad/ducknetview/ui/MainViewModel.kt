@@ -30,6 +30,7 @@ import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.StateFilter
 import com.vlad.ducknetview.domain.model.Transport
 import com.vlad.ducknetview.domain.search.Search
+import com.vlad.ducknetview.domain.search.SearchResult
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.sort.Sorters
 import com.vlad.ducknetview.domain.usage.DailyUsage
@@ -157,13 +158,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             listOf(e.kind.label, e.subject, e.detail, e.level.name)
         }
 
-        val matched = when (tabFlow.value) {
-            Tab.CONNECTIONS -> connsSearched.matched
-            Tab.APPS -> appsSearched.matched
-            Tab.SERVICES -> servicesSearched.matched
-            Tab.EVENTS -> eventsSearched.matched
-            else -> emptySet()
+        // Both the highlighted rows and the counter describe the one table on
+        // screen, so they are read off the same result rather than selected
+        // twice. The counter used to sum all four tables, which put "3 matches"
+        // above a table showing none of them and made the "n / m" denominator
+        // count rows n/N could never walk to.
+        val visibleSearch: SearchResult<*>? = when (tabFlow.value) {
+            Tab.CONNECTIONS -> connsSearched
+            Tab.APPS -> appsSearched
+            Tab.SERVICES -> servicesSearched
+            Tab.EVENTS -> eventsSearched
+            else -> null
         }
+        val matched = visibleSearch?.matched ?: emptySet()
         val highlighting = settings.searchMode == SearchMode.HIGHLIGHT && search.active
 
         UiState(
@@ -191,8 +198,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             vpnRunning = vpnRunning && frozen == null,
             usageAccessGranted = deps.usage.hasAccess(),
             status = status,
-            matchCount = connsSearched.matchCount + appsSearched.matchCount +
-                servicesSearched.matchCount + eventsSearched.matchCount,
+            matchCount = visibleSearch?.matchCount ?: 0,
             matchedRows = if (highlighting) matched else emptySet(),
             matchCursor = if (highlighting) misc.matchCursor else -1,
             wifiPermissionGranted = hasWifiPermission(misc.permissionEpoch),

@@ -211,4 +211,25 @@ class UsageFormatTest {
             java.util.TimeZone.setDefault(previous)
         }
     }
+
+    /**
+     * A row carrying a millisecond timestamp instead of a day number used to
+     * throw out of here and take the whole app down with it — the usage screen
+     * crashed on open, repeatedly, on a real device. The unit mismatch is fixed
+     * at the producer; this keeps the formatter from ever being the thing that
+     * kills the process again.
+     */
+    @Test
+    fun formatDayLabelsAValueItCannotRenderInsteadOfThrowing() {
+        val millis = 1_789_243_200_000L
+        assertEquals("day $millis", formatDay(millis))
+        assertEquals("day ${Long.MIN_VALUE}", formatDay(Long.MIN_VALUE))
+        assertEquals("day ${Long.MAX_VALUE}", formatDay(Long.MAX_VALUE))
+    }
+
+    @Test
+    fun formatDayStillRendersTheEdgesOfTheSupportedRange() {
+        assertEquals("Mon Jan 1", formatDay(LocalDate.of(-999_999_999, 1, 1).toEpochDay()))
+        assertEquals("Fri Dec 31", formatDay(LocalDate.of(999_999_999, 12, 31).toEpochDay()))
+    }
 }

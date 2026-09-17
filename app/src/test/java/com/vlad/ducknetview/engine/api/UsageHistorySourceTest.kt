@@ -2,6 +2,8 @@ package com.vlad.ducknetview.engine.api
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -96,5 +98,57 @@ class UsageHistorySourceTest {
     @Test
     fun `dailyDevice asks for nothing when given no days`() = runBlocking {
         assertTrue(UsageHistorySource(context).dailyDevice(0).isEmpty())
+    }
+
+    /**
+     * NetworkStatsManager is queried in milliseconds but DailyUsage records a
+     * day number, and for a while the millisecond value was written straight
+     * into the record. Nothing caught it: both halves were self-consistent and
+     * only met on a device, where the usage screen threw
+     * `Invalid value for EpochDay` and killed the app. These pin the boundary.
+     */
+    @Test
+    fun `epochDayOf turns a query timestamp into a day number`() {
+        val starts = UsageHistorySource.dayStarts(1_700_000_000_000L, 3, utc)
+        val days = starts.map { UsageHistorySource.epochDayOf(it, utc) }
+
+        assertEquals(listOf(19_673L, 19_674L, 19_675L), days)
+        // Consecutive midnights are consecutive day numbers, not 86_400_000 apart.
+        assertEquals(1L, days[1] - days[0])
+    }
+
+    /**
+     * The tempting one-liner is `millis / 86_400_000`, and it is wrong: the
+     * stored value is a *local* midnight, which east of UTC is the previous
+     * day's afternoon in UTC. This is the case that separates them.
+     */
+    @Test
+    fun `epochDayOf is the local day, not the UTC quotient`() {
+        val kiritimati = ZoneId.of("Pacific/Kiritimati") // UTC+14
+        val midnight = UsageHistorySource.dayStarts(1_700_000_000_000L, 1, kiritimati).first()
+        val expected = Instant.ofEpochMilli(midnight).atZone(kiritimati).toLocalDate().toEpochDay()
+
+        assertEquals(expected, UsageHistorySource.epochDayOf(midnight, kiritimati))
+        assertEquals("the naive conversion should be a day behind here", expected - 1, midnight / 86_400_000L)
+    }
+
+    @Test
+    fun `todayEpochDay is the day number startOfToday names`() {
+        assertEquals(
+            UsageHistorySource.epochDayOf(UsageHistorySource.startOfToday(utc), utc),
+            UsageHistorySource.todayEpochDay(utc),
+        )
+    }
+
+    /** The values the rollup stores must be ones the screen can render. */
+    @Test
+    fun `stored day keys are inside LocalDate's range`() {
+        val keys = UsageHistorySource.dayStarts(1_700_000_000_000L, 40, utc)
+            .map { UsageHistorySource.epochDayOf(it, utc) } + UsageHistorySource.todayEpochDay(utc)
+
+        for (key in keys) {
+            // Throws DateTimeException if the producer ever hands back millis again.
+            LocalDate.ofEpochDay(key)
+        }
     }
 }

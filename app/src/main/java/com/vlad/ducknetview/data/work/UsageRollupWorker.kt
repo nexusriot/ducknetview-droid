@@ -38,7 +38,7 @@ class UsageRollupWorker(
 
         val catalog = AppCatalog(applicationContext)
         val day = UsageRollupLogic.dayUsage(
-            dayEpoch = UsageHistorySource.startOfToday(),
+            dayEpoch = UsageHistorySource.todayEpochDay(),
             perUid = perUid,
             label = { uid -> catalog.label(uid) },
         )

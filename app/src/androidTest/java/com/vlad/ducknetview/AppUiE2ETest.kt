@@ -2,18 +2,32 @@ package com.vlad.ducknetview
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.vlad.ducknetview.ui.Tab
+import com.vlad.ducknetview.ui.screens.EMPTY_USAGE
+import com.vlad.ducknetview.ui.screens.formatDay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * Drives the real app on a real device: the whole graph is live here — engine,
@@ -26,6 +40,19 @@ class AppUiE2ETest {
 
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
+
+    /**
+     * `paused` lives in DataStore, so a test that pauses and then fails leaves
+     * the *next* run's app frozen — no poll ticks, no snapshots, and a batch of
+     * failures nowhere near the test that caused them. That happened. Whatever
+     * this class does to the pause flag, it hands the device back running.
+     */
+    @After
+    fun unpause() {
+        val app = InstrumentationRegistry.getInstrumentation()
+            .targetContext.applicationContext as DuckApp
+        runBlocking { app.deps.settings.update { it.copy(paused = false) } }
+    }
 
     private fun goTo(tab: Tab) {
         rule.onNodeWithTag("nav:${tab.route}").performClick()
@@ -83,31 +110,134 @@ class AppUiE2ETest {
     @Test
     fun t05_serviceScanRunsAgainstThisDeviceAndFinishes() {
         goTo(Tab.SERVICES)
+        // Whatever the line says now — "Last scan never" in a fresh process, a
+        // clock time if something already scanned — it has to change. Comparing
+        // against what is there beats assuming a starting state this test does
+        // not control.
+        val before = textOf("services:lastscan")
+
         rule.onNodeWithTag("services:scan", useUnmergedTree = true).performClick()
-        // A fast-mode self-scan of loopback plus the local addresses.
-        rule.waitUntil(120_000) {
+
+        // Waiting for the progress indicator to disappear proves nothing: a scan
+        // that never started looks exactly the same. The "Last scan" line is the
+        // evidence, and it only moves once a scan has finished and the next poll
+        // has carried its timestamp into a snapshot.
+        rule.waitUntil(120_000) { textOf("services:lastscan").let { it != null && it != before } }
+        rule.waitUntil(20_000) {
             rule.onAllNodesWithTag("services:progress", useUnmergedTree = true)
                 .fetchSemanticsNodes().isEmpty()
         }
-        assertTrue(true)
+        assertTrue(
+            "the scan never completed; the line still reads $before",
+            textOf("services:lastscan").orEmpty().let {
+                it.isNotEmpty() && !it.contains("never", ignoreCase = true)
+            },
+        )
+    }
+
+    /** The visible text of the first node carrying [tag], or null if absent. */
+    private fun textOf(tag: String): String? =
+        rule.onAllNodesWithTag(tag, useUnmergedTree = true)
+            .fetchSemanticsNodes()
+            .firstOrNull()
+            ?.config
+            ?.getOrNull(SemanticsProperties.Text)
+            ?.joinToString(" ") { it.text }
+
+    /** The pause control's content description: "Pause" running, "Resume" paused. */
+    private fun pauseLabel(): String? =
+        rule.onAllNodesWithTag("action:pause", useUnmergedTree = false)
+            .fetchSemanticsNodes()
+            .firstOrNull()
+            ?.config
+            ?.getOrNull(SemanticsProperties.ContentDescription)
+            ?.firstOrNull()
+
+    private fun awaitPauseLabel(want: String) {
+        try {
+            rule.waitUntil(15_000) { pauseLabel() == want }
+        } catch (e: ComposeTimeoutException) {
+            throw AssertionError("pause control never became \"$want\"; it reads ${pauseLabel()}", e)
+        }
     }
 
     @Test
     fun t06_pauseTogglesAndSurvivesATabRoundTrip() {
+        // The control's description is the state: "Pause" while running,
+        // "Resume" while paused. Clicking and asserting nothing proved only
+        // that the tap did not crash.
+        awaitPauseLabel("Pause")
         rule.onNodeWithTag("action:pause").performClick()
-        rule.waitForIdle()
+        awaitPauseLabel("Resume")
+
         goTo(Tab.EVENTS)
         goTo(Tab.OVERVIEW)
+        assertEquals("pause must survive a tab round trip", "Resume", pauseLabel())
+
         rule.onNodeWithTag("action:pause").performClick()
-        rule.waitForIdle()
+        awaitPauseLabel("Pause")
     }
 
     @Test
     fun t07_settingsOpensAndCloses() {
         rule.onNodeWithTag("action:settings").performClick()
         rule.waitForIdle()
+        waitForTag("settings:privacy")
         rule.onNodeWithTag("action:settings").performClick()
         rule.waitForIdle()
         rule.onNodeWithTag("nav:overview", useUnmergedTree = true).assertExists()
+    }
+
+    /**
+     * The suite drove all seven nav destinations and never opened Usage, which
+     * is reached from the top bar instead — so a stored day key in the wrong
+     * unit went unnoticed until the screen was opened by hand on a tablet and
+     * took the process down with `Invalid value for EpochDay`. Composing it
+     * against whatever this device has actually rolled up is the whole point:
+     * a fixture can only carry values the test itself chose.
+     */
+    @Test
+    fun t08_usageScreenComposesAgainstThisDevicesStoredHistory() {
+        rule.onNodeWithTag("action:usage").performClick()
+        rule.waitForIdle()
+        waitForTag("screen:usage")
+
+        // Either the history renders or the empty state says there is none;
+        // both are correct, and a crash is neither.
+        rule.waitUntil(20_000) {
+            rule.onAllNodesWithTag("usage:chart", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty() ||
+                rule.onAllNodesWithTag("usage:range-7", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty() ||
+                rule.onAllNodesWithText(EMPTY_USAGE, useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+        }
+        rule.onNodeWithTag("screen:usage", useUnmergedTree = true).assertExists()
+
+        rule.onNodeWithTag("action:usage").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("nav:overview", useUnmergedTree = true).assertExists()
+    }
+
+    /**
+     * Every stored day key has to be one the screen can render. [formatDay] is
+     * total now, so a bad key no longer crashes — it renders as "day <n>", and
+     * that is what this catches.
+     */
+    @Test
+    fun t09_everyStoredUsageDayIsARenderableDayNumber() {
+        val app = InstrumentationRegistry.getInstrumentation()
+            .targetContext.applicationContext as DuckApp
+        val days = runBlocking { app.deps.usageRepo.all.first() }
+
+        for (day in days) {
+            assertTrue(
+                "stored dayEpoch ${day.dayEpoch} is not a day number; " +
+                    "it renders as '${formatDay(day.dayEpoch)}'",
+                formatDay(day.dayEpoch) == LocalDate.ofEpochDay(day.dayEpoch)
+                    .format(DateTimeFormatter.ofPattern("EEE MMM d", Locale.US)),
+            )
+        }
+        println("USAGE rows=${days.size}")
     }
 }

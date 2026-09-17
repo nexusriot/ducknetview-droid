@@ -174,14 +174,29 @@ class VpnCaptureE2ETest {
         assertNotNull(VpnBridge.table)
     }
 
+    /**
+     * Our own traffic is being captured, so the owner should resolve to a real
+     * application uid rather than the unknown sentinel.
+     *
+     * The wait is for an *attributed* flow, not for the first matching one.
+     * `getConnectionOwnerUid` answers about a live socket, and a short request
+     * can be gone before the lookup runs, leaving that one flow at -1; pinning
+     * the assertion to whichever flow happened to appear first made this fail
+     * intermittently on the tablet. Requiring that attribution works, rather than
+     * that it works for every socket, is both the property worth having and one
+     * the platform can actually deliver — nothing attributed at all still fails.
+     */
     @Test
     fun t07_uidAttributionIdentifiesTheCallingApp() {
-        fetch("https://connectivitycheck.gstatic.com/generate_204")
-        val flow = observe(20_000) { it.proto == Proto.TCP && it.dstPort == 443 && it.tx > 0 }
-        assertNotNull("expected a captured flow to attribute", flow)
-        // Our own traffic is being captured, so the owner should resolve to a
-        // real application uid rather than the unknown sentinel.
-        assertTrue("uid should be attributed, got ${flow!!.uid}", flow.uid > 0)
+        repeat(3) { fetch("https://connectivitycheck.gstatic.com/generate_204") }
+        val flow = observe(20_000) {
+            it.proto == Proto.TCP && it.dstPort == 443 && it.tx > 0 && it.uid > 0
+        }
+        assertNotNull(
+            "no captured flow was attributed to an app; uids seen: " +
+                snapshotFlows().filter { it.dstPort == 443 }.map { it.uid },
+            flow,
+        )
     }
 
     private fun snapshotFlows(): List<Observed> {

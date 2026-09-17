@@ -18,6 +18,7 @@ import com.vlad.ducknetview.domain.totals.SessionTotals
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.engine.api.ApiSample
 import com.vlad.ducknetview.engine.api.AppCatalog
+import com.vlad.ducknetview.engine.api.TrafficSampler
 import com.vlad.ducknetview.engine.vpn.FlowTable
 
 /**
@@ -34,6 +35,20 @@ class SnapshotAssembler(
     private val rdns: RdnsCache,
     private val historySize: Int = 60,
 ) {
+    /**
+     * Flow rates live in their own tracker, apart from the device, per-interface
+     * and per-UID series in [rates].
+     *
+     * Flows come and go constantly, so the flow side has to `retain()` the keys
+     * still alive on every tick. `retain` drops everything it is not given, and
+     * while the two shared one tracker that call deleted the API engine's series
+     * once per poll: with capture on, device throughput, every link's rate and
+     * per-app throughput all read zero, because each poll re-baselined them. Two
+     * trackers mean the flow side can prune as aggressively as it needs to
+     * without reaching into series it does not own.
+     */
+    private val flowRates = RateTracker(historySize)
+
     private var deviceName: String = ""
     private var startedAt: Long = 0L
     private var peakRx = 0L
@@ -44,6 +59,7 @@ class SnapshotAssembler(
     private var seenConnKeys = HashSet<String>()
     private var services: List<ServiceRow> = emptyList()
     private var serviceScanAt: Long = 0L
+    private var todayPerUid: Map<Int, Pair<Long, Long>> = emptyMap()
 
     fun configure(deviceName: String, startedAt: Long) {
         this.deviceName = deviceName
@@ -53,6 +69,18 @@ class SnapshotAssembler(
     fun setServices(rows: List<ServiceRow>, at: Long) {
         services = rows
         serviceScanAt = at
+    }
+
+    /**
+     * Today's per-UID totals from NetworkStatsManager, refreshed on the slow
+     * cadence rather than every poll because the query is expensive.
+     *
+     * Without this the Apps screen's "today" column — and the `today` sort, and
+     * the CSV and JSON exports — read a flat 0 B for every app: the engine was
+     * fetching these numbers on schedule and discarding them.
+     */
+    fun setTodayUsage(byUid: Map<Int, Pair<Long, Long>>) {
+        todayPerUid = byUid
     }
 
     fun assemble(
@@ -71,6 +99,14 @@ class SnapshotAssembler(
 
         val conns = if (flows != null) buildConns(flows, now, settings, watchlist) else emptyList()
         val apps = buildApps(conns, api, flows != null)
+
+        // The grand session total integrates the same device counters that feed
+        // the "Now" and "Session peak" rows beside it, so it is available in API
+        // mode too — where there are no flows to add up at all.
+        totals.addDevice(
+            rates.deltaOf(TrafficSampler.KEY_DEVICE_RX),
+            rates.deltaOf(TrafficSampler.KEY_DEVICE_TX),
+        )
 
         peakRx = maxOf(peakRx, api.total.rxBps)
         peakTx = maxOf(peakTx, api.total.txBps)
@@ -134,8 +170,8 @@ class SnapshotAssembler(
             keys += id
             val rx = f.rx.get()
             val tx = f.tx.get()
-            val rxBps = rates.update("$id|rx", rx, now)
-            val txBps = rates.update("$id|tx", tx, now)
+            val rxBps = flowRates.update("$id|rx", rx, now)
+            val txBps = flowRates.update("$id|tx", tx, now)
 
             val (label, pkg) = catalog.row(f.uid).let { it.label to it.packageName }
             val host = rdns.get(f.key.dstIp)
@@ -153,14 +189,14 @@ class SnapshotAssembler(
             out += row
 
             if (rxBps > 0 || txBps > 0) {
-                val dRx = rates.deltaOf("$id|rx")
-                val dTx = rates.deltaOf("$id|tx")
+                val dRx = flowRates.deltaOf("$id|rx")
+                val dTx = flowRates.deltaOf("$id|tx")
                 totals.add(f.uid, label, dRx, dTx)
                 totals.addHost(host ?: f.key.dstIp, dRx, dTx)
             }
         }
 
-        rates.retain(keys.flatMap { listOf("$it|rx", "$it|tx") }.toSet())
+        flowRates.retain(keys.flatMap { listOf("$it|rx", "$it|tx") }.toSet())
         rdns.retain(live.map { it.key.dstIp }.toSet())
         seenConnKeys = keys
         return out
@@ -184,12 +220,15 @@ class SnapshotAssembler(
             )
             val t = if (vpnMode) fromFlows else (api.perUid[uid] ?: Throughput())
             val session = totals.app(uid)
+            val today = todayPerUid[uid]
             base.copy(
                 connCount = rows.size,
                 rxBps = t.rxBps,
                 txBps = t.txBps,
                 sessionRx = session?.rx ?: 0L,
                 sessionTx = session?.tx ?: 0L,
+                todayRx = today?.first ?: 0L,
+                todayTx = today?.second ?: 0L,
                 remoteHosts = rows.map { it.remoteAddr }.distinct().size,
             )
         }

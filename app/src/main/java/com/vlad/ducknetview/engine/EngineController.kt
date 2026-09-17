@@ -189,6 +189,16 @@ class EngineController(
 
     fun applySettings(s: AppSettings) {
         settings = s
+        // Pausing is the one setting that stops the loop that would otherwise
+        // publish it. Without this the tick after "pause" never runs, the
+        // snapshot keeps saying `paused = false`, and the UI shows a running
+        // app with a Pause button that appears to do nothing — while the engine
+        // really has stopped. Republishing the flag here is what makes the
+        // control honest; it is idempotent, since a StateFlow drops an equal
+        // value.
+        if (_snapshot.value.paused != s.paused) {
+            _snapshot.value = _snapshot.value.copy(paused = s.paused)
+        }
         baseline = Baseline(s.baseline.toSet(), s.baselineAt)
         watchlist = Watchlist(s.watchlist)
         VpnBridge.setBlocked(s.blockedUids)
@@ -290,7 +300,10 @@ class EngineController(
 
     private suspend fun refreshUsage() {
         if (!usage.hasAccess()) return
+        // The result used to be dropped on the floor here, which is why every
+        // app's "today" figure was 0 B however much it had moved.
         runCatching { usage.todayPerUid() }
+            .onSuccess { assembler.setTodayUsage(it) }
     }
 
     fun scanServices(onDone: (List<ServiceRow>) -> Unit) {

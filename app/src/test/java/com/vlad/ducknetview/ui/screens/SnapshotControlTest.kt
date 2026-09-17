@@ -1,6 +1,7 @@
 package com.vlad.ducknetview.ui.screens
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -52,6 +53,9 @@ class SnapshotControlTest {
         rule.onNodeWithTag("settings:snapshot-close").performScrollTo().performClick()
         assertEquals(1, actions.closeSnapshotCount)
         assertEquals(0, actions.openSnapshotCount)
+        // "Replaced" is the claim, so the open control has to be gone. It used
+        // to share its tag with the frozen note, which made this unassertable.
+        rule.onNodeWithTag("settings:snapshot-open").assertDoesNotExist()
     }
 
     @Test
@@ -62,7 +66,16 @@ class SnapshotControlTest {
             ),
             RecordingActions(),
         )
-        rule.onNodeWithTag("settings:snapshot-open").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag("settings:snapshot-frozen")
+            .performScrollTo()
+            .assertTextContains("remote-host.json", substring = true)
+    }
+
+    @Test
+    fun theFrozenNoteIsAbsentWhileBrowsingLiveData() {
+        show(screenState(), RecordingActions())
+        rule.onNodeWithTag("settings:snapshot-frozen").assertDoesNotExist()
+        rule.onNodeWithTag("settings:snapshot-close").assertDoesNotExist()
     }
 
     @Test

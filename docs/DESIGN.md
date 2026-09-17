@@ -184,6 +184,16 @@ device to validate.
   is not paid twice. Robolectric renders with no system bars, so the whole suite
   passed while the device was visibly wrong: this class of bug needs a
   screenshot, not a test.
+- **A screen not on the nav bar is a screen no suite visits.** The device suite
+  drove all seven navigation destinations and never once opened **Usage**, which
+  is reached from the top bar instead. The crash described in §8a therefore
+  survived every green run until the icon was tapped by hand.
+- **`getConnectionOwnerUid` does not answer for a socket that has closed.** It
+  is a query about a *live* connection, so a short HTTP request can finish
+  before the lookup runs and that flow keeps the `-1` sentinel. A capture test
+  that pinned its assertion to whichever flow appeared first therefore failed
+  intermittently; asserting that *some* flow attributes is both the property
+  worth having and the one the platform can deliver.
 - **`am instrument` exits 0 even when tests fail.** The verdict is in its output
   (`OK (n tests)` versus `FAILURES!!!`), which is why `run-device-e2e.sh` now
   parses the log it captures instead of trusting the exit status.
@@ -205,6 +215,70 @@ and HIGHLIGHT search mode computed match ranges that no screen rendered.
 `app/src/test/.../arch/UiActionsWiredTest.kt` now asserts every `UiActions`
 member has a caller in `ui/` or `MainActivity`. Reflection proves a method
 exists; only a source scan proves something invokes it.
+
+A fourth turned up on the device, and the guard does not cover it because it is
+not a `UiActions` member: **`AppRow.todayRx` / `todayTx` were read in six places
+— the Apps row, its detail sheet, the `today` sort column, the CSV and the JSON
+export — and written in none.** `refreshUsage()` queried NetworkStatsManager on
+the slow cadence and discarded the result, so every app reported `today 0 B`
+however much it had moved. The missing line was the one that carried the answer
+into the assembler.
+
+The lesson generalises past `UiActions`: a field the UI renders needs a producer
+as much as a button needs a handler, and "compiles and has a default" hides the
+absence of one.
+
+### 8a. The second class: two correct layers, a wrong seam
+
+A device run found three defects that every existing test called fine, because
+each lived *between* two components that were individually right and
+individually tested.
+
+- **`daily_usage.dayEpoch` held milliseconds.** `UsageHistorySource` queries
+  NetworkStatsManager in milliseconds and was handing the query boundary
+  straight to `DailyUsage`, whose contract is a day number. The screen's
+  `LocalDate.ofEpochDay` threw and took the process down. The producer tests
+  asserted milliseconds, the formatter tests passed day numbers, and the two
+  never met. Fixed at the producer, with `MIGRATION_1_2` for devices that
+  already stored the bad values and a formatter that labels an unrenderable key
+  instead of throwing — a formatter is the wrong place to discover a unit
+  mismatch.
+- **Capture mode zeroed every device rate.** `SnapshotAssembler` pruned dead
+  flows with `RateTracker.retain`, which drops every key it is *not* given — on
+  a tracker it shared with `ApiEngine`. So each poll deleted `device.rx`,
+  `net.*` and `uid.*`, the next sample re-baselined, and with capture on the
+  throughput card, every link's rate and per-app throughput all read a flat
+  `0 B/s` under a sustained multi-megabyte download. Flows now own a separate
+  tracker; the two lifetimes were never compatible in one map.
+- **Session totals were flow-only.** The grand total was accumulated from the
+  flow deltas, which do not exist in API mode — the always-on default — so
+  "Session total" read `0 B` forever, directly beneath two live rows fed by the
+  device counters. It now integrates those same counters, so the card is
+  consistent with itself and true in both modes.
+
+`SnapshotAssemblerTest` is the guard for the last two: the assembler is where
+the two engines meet the UI, and nothing tested it at all.
+
+A fourth came out of the same run, and it is the purest example of the class:
+**`snapshot.paused` was only ever published by a tick, and pausing is what stops
+ticks.** Tapping Pause set the flag, the loop saw it and skipped its next tick,
+and so the snapshot went on saying `paused = false` forever — the engine really
+had stopped, while the button, the title marker and the `⏸ PAUSED` badge all
+still showed a running app. Resuming worked, because a running loop does tick.
+By hand it usually *looked* fine: the flag would land mid-tick and be picked up
+by an assemble already in flight, which is a race, not a mechanism.
+`applySettings` now republishes the flag, so the control is honest at the moment
+it is pressed.
+
+That one hid behind a test that clicked the button and asserted nothing —
+`performClick()` twice with no expectation proves only that a tap does not
+crash. `t06` now reads the control's own content description before and after,
+which is what caught it.
+
+The same run found the search counter summing matches across all four tables
+while `n`/`N` could only walk the visible one — "3 matches" over a table showing
+none. The counter and the highlighted set are now read off one `SearchResult`,
+so the two cannot disagree again.
 
 ## 9. Deliberate non-goals
 

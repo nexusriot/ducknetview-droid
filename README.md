@@ -145,7 +145,7 @@ points at an SDK with **platform 35** and **platform-tools** installed. Writing
 `sdk.dir=/path/to/Sdk` into `local.properties` works too; the environment
 variable is preferred because it does not tempt anyone to commit the file.
 
-1110 unit tests and 19 instrumented tests; see **Running the tests** and
+1128 unit tests and 24 instrumented tests; see **Running the tests** and
 **Test on a device**.
 
 ## Test on a device
@@ -166,17 +166,25 @@ failure that is not a real failure — a debug APK built on another machine cann
 upgrade the installed one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so the script
 removes the stale package and retries rather than stopping.
 
-Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 19
-instrumented test methods; **17 do real work on a default run and all pass**
-(171 s), and the remaining two skip unless given their arguments.
+Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 24
+instrumented test methods; **22 do real work on a default run and all pass**,
+and the remaining two skip unless given their arguments.
 
 | Suite | Tests | Notes |
 |---|---|---|
 | `VpnCaptureE2ETest` | 7 | turns on capture, makes real requests, asserts flows appear with correct byte counters, RTT and UID attribution |
-| `AppUiE2ETest` | 7 | drives the real app through every screen with the live engine, Room and DataStore behind it |
+| `AppUiE2ETest` | 9 | drives the real app through every screen with the live engine, Room and DataStore behind it |
+| `UsageMigrationDeviceTest` | 5 | runs the `daily_usage` schema migration on the device's own SQLite |
 | `CaptureToUiE2ETest` | 2 | closes the loop: packets off the TUN become flows, flows become a snapshot, the snapshot renders as rows |
 | `MetricsEndpointDeviceTest` | 1 (+1 opt-in) | enables the setting and scrapes the endpoint over a real socket; `-e holdSeconds N` holds it open for an external scrape |
 | `CaptureBenchmarkTest` | opt-in | needs `-e benchUrl`; see **Capture cost** |
+
+Two of `AppUiE2ETest`'s cases exist because the suite used to drive only the
+seven *navigation* destinations. **Usage** is reached from the top bar instead,
+so nothing ever composed it — and the day keys the rollup stored were
+milliseconds where the screen expected day numbers, which meant opening it by
+hand on the tablet killed the app with `Invalid value for EpochDay`. A screen
+reachable by a different route is still a screen.
 
 `VpnCaptureE2ETest` sets `VpnBridge.captureOwnTraffic` so the test process's own
 traffic traverses the TUN, which is the only way to observe capture end to end.
@@ -230,7 +238,11 @@ ui/          Compose screens as pure functions of UiState + UiActions
 
 Room's exported schemas in `app/schemas/` are committed on purpose: they are the
 migration record, and without them a future migration cannot be validated
-against the shipped database.
+against the shipped database. `MIGRATION_1_2` is the first of them: the column
+layout did not change, only the meaning of `daily_usage.dayEpoch`, which held a
+local midnight in *milliseconds* under a name the rest of the app reads as a day
+number. The conversion runs in Kotlin rather than SQL because dividing by
+86_400_000 lands on the previous day everywhere east of UTC.
 
 `domain/` has no Android dependency on purpose, so the event engine, alert
 rules, baseline diffing, search, sort and rate maths are all plain JVM tests.

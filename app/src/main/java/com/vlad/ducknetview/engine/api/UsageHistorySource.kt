@@ -116,7 +116,7 @@ class UsageHistorySource(context: Context) {
             // apps/hosts stay empty: NetworkStatsManager buckets carry neither a
             // package breakdown for a single UID nor any remote-host attribution.
             DailyUsage(
-                dayEpoch = starts[i],
+                dayEpoch = epochDayOf(starts[i]),
                 rx = rx[i],
                 tx = tx[i],
                 apps = emptyMap(),
@@ -142,7 +142,13 @@ class UsageHistorySource(context: Context) {
                     tx += bucket.txBytes
                 }
             }
-            DailyUsage(dayEpoch = start, rx = rx, tx = tx, apps = emptyMap(), hosts = emptyMap())
+            DailyUsage(
+                dayEpoch = epochDayOf(start),
+                rx = rx,
+                tx = tx,
+                apps = emptyMap(),
+                hosts = emptyMap(),
+            )
         }
     }
 
@@ -213,6 +219,22 @@ class UsageHistorySource(context: Context) {
 
         internal fun startOfToday(zone: ZoneId = ZoneId.systemDefault()): Long =
             LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
+
+        /**
+         * The day number a local-midnight timestamp names.
+         *
+         * NetworkStatsManager is queried in milliseconds, but [DailyUsage]
+         * records a *day number*, so every millisecond boundary crossing into a
+         * stored row has to come through here. Passing the query timestamp
+         * straight through instead is what made the usage screen throw
+         * `Invalid value for EpochDay` on the first row it tried to format.
+         */
+        internal fun epochDayOf(atMillis: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
+            Instant.ofEpochMilli(atMillis).atZone(zone).toLocalDate().toEpochDay()
+
+        /** Today's day number, the key every rollup writes under. */
+        internal fun todayEpochDay(zone: ZoneId = ZoneId.systemDefault()): Long =
+            LocalDate.now(zone).toEpochDay()
 
         /** Local midnights for the last [days] days, oldest first, today last. */
         internal fun dayStarts(

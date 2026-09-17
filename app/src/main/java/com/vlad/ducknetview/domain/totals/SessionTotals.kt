@@ -32,15 +32,34 @@ class SessionTotals(
     val hostCount: Int get() = hosts.size
 
     /**
-     * Books one poll's delta against an app, and against the session grand
-     * total. [addHost] deliberately does not touch the grand total, so a
-     * caller that books both sides does not count the same bytes twice.
+     * Books one poll's device-wide delta against the session grand total.
+     *
+     * The grand total is deliberately *not* fed from [add] or [addHost]. Those
+     * describe the flows the capture engine can see, which is nothing at all in
+     * API mode — the always-on default — so a grand total built from them read
+     * a flat 0 B for the mode most users are in. The device counters are the
+     * same source as the "Now" and "Session peak" rows this total sits beside,
+     * so integrating them is both available in every mode and consistent with
+     * its own card.
+     *
+     * Bytes that moved while the app was paused or frozen are included: the
+     * counter is cumulative, and silently dropping the gap would under-report
+     * the session rather than describe it.
      */
-    fun add(uid: Int, label: String, rx: Long, tx: Long) {
+    fun addDevice(rx: Long, tx: Long) {
         if (rx <= 0L && tx <= 0L) return
         sessionRx += rx
         sessionTx += tx
+    }
 
+    /**
+     * Books one poll's delta against an app. Like [addHost] this leaves the
+     * session grand total alone — see [addDevice] for where that comes from and
+     * why booking it here would both double-count capture mode and leave API
+     * mode empty.
+     */
+    fun add(uid: Int, label: String, rx: Long, tx: Long) {
+        if (rx <= 0L && tx <= 0L) return
         val e = apps.getOrPut(uid) { Entry(uid.toString(), label, 0L, 0L) }
         if (e.label.isEmpty()) e.label = label
         e.rx += rx
@@ -57,7 +76,7 @@ class SessionTotals(
         evict(hosts)
     }
 
-    /** Books one connection's delta against its app, its host and the total. */
+    /** Books one connection's delta against its app and its host. */
     fun addConn(uid: Int, label: String, host: String, rx: Long, tx: Long) {
         add(uid, label, rx, tx)
         addHost(host, rx, tx)
