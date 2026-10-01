@@ -17,6 +17,7 @@ different way, and is explicit about the parts it cannot.
 | Throughput, links, routes, DNS, Wi-Fi | ✅ | ✅ |
 | Live connection table | ❌ | ✅ |
 | Per-connection bytes, RTT | ❌ | ✅ exact — the proxy moves every byte |
+| Names the device asked for | ❌ | ✅ from DNS answers and TLS SNI |
 | Closed-connection history | ❌ | ✅ with true lifetime totals |
 | Per-app attribution | coarse | ✅ via `getConnectionOwnerUid` |
 | Per-app firewall | ❌ | ✅ (refuse the upstream socket) |
@@ -31,14 +32,17 @@ that cannot account for sockets.
 
 ## Screens
 
-Seven navigation destinations —
-`Overview · Links · Services · Apps · Conns · Routes · Events` — plus **Usage**
-and **Settings**, reached from the top bar.
+Eight navigation destinations —
+`Overview · Links · Services · Apps · Conns · Domains · Routes · Events` — plus
+**Usage** and **Settings**, reached from the top bar.
 
 - **Overview** — security summary (exposed / public / watchlist / off-baseline,
-  each tappable through to the filtered screen), gateway and DNS, TCP-handshake
-  latency with history, throughput with session peaks and sparklines, top
-  talkers, connection churn, external IP.
+  each tappable through to the filtered screen), gateway and DNS, path latency
+  with history, throughput with session peaks and sparklines, top talkers,
+  connection churn, external IP. The gateway is measured with a real **ICMP
+  echo** where the kernel allows an unprivileged ping socket, and by timing a
+  TCP handshake where it does not; each reading says which, because the two are
+  not the same measurement.
 - **Links** — per-network detail, Wi-Fi dBm with a plain-language rating, link
   speeds, band and standard; hide-noise filter.
 - **Services** — Android forbids enumerating other apps' listeners, so this
@@ -49,7 +53,21 @@ and **Settings**, reached from the top bar.
   rather than faked.
 - **Conns** — the flagship: live flows with per-connection bytes, RTT, age,
   scope colouring, watchlist highlighting, quick filters, reverse DNS,
-  group-by-host, and closed-connection history.
+  group-by-host, and closed-connection history. **ICMP echo is relayed too**,
+  so `ping` keeps working while capture is on and its rows carry a measured
+  round trip — the dispatcher used to know only TCP and UDP, which meant
+  turning capture on silently broke ping for every app on the device. The rest
+  of ICMP is not relayed and the screen says so: replies such as Time Exceeded
+  arrive on a socket error queue no public API can read.
+- **Domains** — every name this device asked for, who asked, how often, and
+  what it resolved to. Two sources, and each row says which: **DNS** answers
+  read off the TUN, and **TLS SNI** for the connections where no DNS answer was
+  visible. That second source is what keeps the screen useful at all on a
+  device with Private DNS switched on — the default on most modern Android —
+  where lookups are encrypted and the app sees none of them. The screen says
+  that in so many words rather than showing an empty table. This is not TLS
+  interception: SNI is sent in the clear before any key exchange, nothing is
+  decrypted, and the handshake is relayed byte for byte either way.
 - **Routes** — every simultaneously-active network's routes and DNS. The
   ARP/neighbour table is **not available on Android 10+** and the screen says
   so rather than leaving a silent gap.
@@ -131,6 +149,13 @@ ipify (optional), configured latency targets, the optional webhook, and reverse
 DNS. **Packet contents are never captured or stored** — the proxy relays and
 counts. This is a monitor, not a sniffer.
 
+Two fields are read out of payloads and nothing else is: the answers in a DNS
+response, and the `server_name` in a TLS ClientHello. Both are names, both are
+sent in the clear, and both exist so a connection can be labelled with
+something a person recognises instead of a bare address. Nothing is decrypted,
+no certificate is substituted, and the bytes are relayed unchanged. The name
+store keeps 30 days and has a Clear button.
+
 ## Build
 
 ```bash
@@ -145,7 +170,7 @@ points at an SDK with **platform 35** and **platform-tools** installed. Writing
 `sdk.dir=/path/to/Sdk` into `local.properties` works too; the environment
 variable is preferred because it does not tempt anyone to commit the file.
 
-1128 unit tests and 24 instrumented tests; see **Running the tests** and
+1242 unit tests and 27 instrumented tests; see **Running the tests** and
 **Test on a device**.
 
 ## Test on a device
@@ -166,14 +191,16 @@ failure that is not a real failure — a debug APK built on another machine cann
 upgrade the installed one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so the script
 removes the stale package and retries rather than stopping.
 
-Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 24
-instrumented test methods; **22 do real work on a default run and all pass**,
-and the remaining two skip unless given their arguments.
+Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 27
+instrumented test methods; **25 do real work on a default run**, and the
+remaining two skip unless given their arguments. The ICMP case skips as well on
+a kernel that does not permit unprivileged ping sockets, which is a
+configuration (`net.ipv4.ping_group_range`) rather than a guarantee.
 
 | Suite | Tests | Notes |
 |---|---|---|
-| `VpnCaptureE2ETest` | 7 | turns on capture, makes real requests, asserts flows appear with correct byte counters, RTT and UID attribution |
-| `AppUiE2ETest` | 9 | drives the real app through every screen with the live engine, Room and DataStore behind it |
+| `VpnCaptureE2ETest` | 9 | turns on capture, makes real requests, asserts flows appear with correct byte counters, RTT and UID attribution; pings through the TUN; proves a name learnt from a TLS handshake reaches storage |
+| `AppUiE2ETest` | 10 | drives the real app through every screen with the live engine, Room and DataStore behind it |
 | `UsageMigrationDeviceTest` | 5 | runs the `daily_usage` schema migration on the device's own SQLite |
 | `CaptureToUiE2ETest` | 2 | closes the loop: packets off the TUN become flows, flows become a snapshot, the snapshot renders as rows |
 | `MetricsEndpointDeviceTest` | 1 (+1 opt-in) | enables the setting and scrapes the endpoint over a real socket; `-e holdSeconds N` holds it open for an external scrape |

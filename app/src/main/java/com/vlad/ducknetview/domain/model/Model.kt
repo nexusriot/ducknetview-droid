@@ -218,13 +218,31 @@ data class ConnRow(
     val watchlisted: Boolean = false,
     val blocked: Boolean = false,
 ) {
-    val local: String get() = fmtAddr(localAddr, localPort)
-    val remote: String get() = fmtAddr(remoteAddr, remotePort)
+    /**
+     * ICMP echo addresses a host, not a service: its ports are the echo
+     * identifier and a zero placeholder, so printing them would read as a
+     * port number that nothing is listening on.
+     */
+    private val hasPorts: Boolean get() = proto != Proto.ICMP
+
+    val local: String
+        get() = if (hasPorts) fmtAddr(localAddr, localPort) else localAddr
+
+    val remote: String
+        get() = if (hasPorts) fmtAddr(remoteAddr, remotePort) else remoteAddr
+
+    /** The echo identifier this flow's requests carry, or -1 when not ICMP. */
+    val echoId: Int get() = if (proto == Proto.ICMP) localPort else -1
 
     /** Resolved name replaces the IP when reverse DNS is on, as in the TUI. */
-    fun remoteDisplay(revDns: Boolean): String =
-        if (revDns && !resolvedHost.isNullOrEmpty()) fmtAddr(resolvedHost, remotePort)
-        else fmtAddr(remoteAddr, remotePort)
+    fun remoteDisplay(revDns: Boolean): String {
+        val host = resolvedHost?.takeIf { revDns && it.isNotEmpty() }
+        return when {
+            host == null -> remote
+            hasPorts -> fmtAddr(host, remotePort)
+            else -> host
+        }
+    }
 
     fun ageMillis(now: Long): Long = (now - firstSeen).coerceAtLeast(0L)
 }
@@ -285,6 +303,17 @@ data class ServiceRow(
 
 // ---------------- latency ----------------
 
+/**
+ * How a latency figure was obtained. The two are not interchangeable: a TCP
+ * handshake includes the peer's accept path, an ICMP echo does not, so a
+ * reading is labelled with the method that produced it rather than presented
+ * as a single abstract "latency".
+ */
+enum class LatencyMethod(val label: String) {
+    TCP("TCP handshake"),
+    ICMP("ICMP echo"),
+}
+
 data class LatencySample(
     val target: String,
     val label: String,
@@ -292,4 +321,5 @@ data class LatencySample(
     val ok: Boolean,
     val history: List<Float> = emptyList(),
     val note: String? = null,
+    val method: LatencyMethod = LatencyMethod.TCP,
 )

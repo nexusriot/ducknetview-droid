@@ -296,6 +296,10 @@ object Packets {
     fun udpPacketLength(ipVersion: Int, payloadLength: Int): Int =
         (if (ipVersion == 4) 20 else 40) + 8 + payloadLength
 
+    /** Bytes [buildIcmpInto] will write for an ICMP message of this length. */
+    fun icmpPacketLength(ipVersion: Int, messageLength: Int): Int =
+        (if (ipVersion == 4) 20 else 40) + messageLength
+
     /**
      * Build a TCP segment. Addresses are the raw bytes as they will appear on
      * the wire, so the caller decides the direction; [ipVersion] must match
@@ -423,6 +427,42 @@ object Packets {
         if (ck == 0) ck = 0xFFFF
         put16(out, u + 6, ck)
         return ipHdrLen + udpLen
+    }
+
+    /**
+     * Wrap a complete ICMP message in an IP header and write it into [out] at
+     * [offset], returning the bytes written.
+     *
+     * The message is copied verbatim apart from its checksum, which is always
+     * recomputed: a reply coming back from a ping socket carries the kernel's
+     * checksum over the identifier the kernel chose, and the relay rewrites
+     * that identifier to the guest's. ICMPv4 checksums the message alone;
+     * ICMPv6 includes the IPv6 pseudo-header, which is why this has to happen
+     * after the addresses are in place.
+     */
+    fun buildIcmpInto(
+        out: ByteArray,
+        offset: Int,
+        ipVersion: Int,
+        srcRaw: ByteArray,
+        dstRaw: ByteArray,
+        message: ByteArray,
+        messageOffset: Int = 0,
+        messageLength: Int = message.size,
+    ): Int {
+        val ipHdrLen = if (ipVersion == 4) 20 else 40
+        val protocol = if (ipVersion == 4) IpProto.ICMP else IpProto.ICMPV6
+        writeIpHeader(out, offset, ipVersion, srcRaw, dstRaw, protocol, messageLength)
+        val m = offset + ipHdrLen
+        System.arraycopy(message, messageOffset, out, m, messageLength)
+        put16(out, m + 2, 0)
+        val ck = if (ipVersion == 4) {
+            checksum(out, m, messageLength)
+        } else {
+            transportChecksum(out, offset, 6, m, messageLength, IpProto.ICMPV6)
+        }
+        put16(out, m + 2, ck)
+        return ipHdrLen + messageLength
     }
 
     private fun writeIpHeader(

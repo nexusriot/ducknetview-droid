@@ -13,6 +13,7 @@ enum class EventKind(val label: String) {
     OFF_BASELINE("off_baseline"),
     WATCHLIST_HIT("watchlist_hit"),
     NEW_PUBLIC_HOST("new_public_host"),
+    NEW_DOMAIN("new_domain"),
     NETWORK_UP("network_up"),
     NETWORK_DOWN("network_down"),
     NETWORK_CHANGED("network_changed"),

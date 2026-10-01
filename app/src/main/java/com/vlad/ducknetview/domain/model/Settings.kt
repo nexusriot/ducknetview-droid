@@ -36,6 +36,8 @@ data class AppSettings(
     val appsSortDesc: Boolean = true,
     val servicesSortCol: String = "port",
     val servicesSortDesc: Boolean = false,
+    val domainsSortCol: String = "seen",
+    val domainsSortDesc: Boolean = true,
     val externalIpEnabled: Boolean = true,
     val latencyTargets: List<String> = emptyList(),
     val watchlist: List<String> = emptyList(),

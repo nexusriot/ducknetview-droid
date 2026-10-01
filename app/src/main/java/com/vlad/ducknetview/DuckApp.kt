@@ -2,6 +2,7 @@ package com.vlad.ducknetview
 
 import android.app.Application
 import com.vlad.ducknetview.data.ClosedConnRepository
+import com.vlad.ducknetview.data.DomainRepository
 import com.vlad.ducknetview.data.EventRepository
 import com.vlad.ducknetview.data.Exporter
 import com.vlad.ducknetview.data.HostSeenRepository
@@ -14,6 +15,7 @@ import com.vlad.ducknetview.engine.EngineController
 import com.vlad.ducknetview.engine.api.ApiEngine
 import com.vlad.ducknetview.engine.api.AppCatalog
 import com.vlad.ducknetview.engine.api.ExternalIpFetcher
+import com.vlad.ducknetview.engine.api.IcmpEchoProbe
 import com.vlad.ducknetview.engine.api.LatencyProber
 import com.vlad.ducknetview.engine.api.PortScanner
 import com.vlad.ducknetview.engine.api.UsageHistorySource
@@ -50,7 +52,9 @@ class DuckApp : Application() {
         val rates = RateTracker()
         val catalog = AppCatalog(app)
         val api = ApiEngine(app, rates)
-        val prober = LatencyProber()
+        // ICMP echo where the kernel permits it, a TCP handshake where it does
+        // not; the prober decides per probe and labels which it used.
+        val prober = LatencyProber(echo = IcmpEchoProbe())
         val externalIp = ExternalIpFetcher()
         val scanner = PortScanner()
         val usage = UsageHistorySource(app)
@@ -60,6 +64,7 @@ class DuckApp : Application() {
         val closedRepo = ClosedConnRepository(db.closedConns(), scope)
         val usageRepo = UsageRepository(db.usage())
         val hostSeenRepo = HostSeenRepository(db.hostsSeen())
+        val domainRepo = DomainRepository(db.domains())
 
         val engine = EngineController(
             context = app,
@@ -73,6 +78,7 @@ class DuckApp : Application() {
             events = eventRepo,
             closedRepo = closedRepo,
             hostSeen = hostSeenRepo,
+            domains = domainRepo,
             rates = rates,
         )
 

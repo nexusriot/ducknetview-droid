@@ -3,6 +3,7 @@ package com.vlad.ducknetview.domain.sort
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnRow
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Scope
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.ThroughputMode
@@ -23,6 +24,7 @@ object Sorters {
     )
     val APP_COLUMNS = listOf("conns", "rx", "tx", "name", "today")
     val SERVICE_COLUMNS = listOf("proto", "port", "service", "exposure")
+    val DOMAIN_COLUMNS = listOf("name", "lookups", "seen", "app")
     val CLOSED_COLUMNS = listOf("closedAt", "lifetime", "rx", "tx")
     val GROUP_COLUMNS = listOf("conns", "host", "bytes")
 
@@ -30,6 +32,7 @@ object Sorters {
         "conns" -> CONN_COLUMNS
         "apps" -> APP_COLUMNS
         "services" -> SERVICE_COLUMNS
+        "domains" -> DOMAIN_COLUMNS
         "closed" -> CLOSED_COLUMNS
         "groups" -> GROUP_COLUMNS
         else -> emptyList()
@@ -60,6 +63,18 @@ object Sorters {
             "rx" -> Comparator { a, b -> connBytes(a, mode, rx = true).compareTo(connBytes(b, mode, rx = true)) }
             "tx" -> Comparator { a, b -> connBytes(a, mode, rx = false).compareTo(connBytes(b, mode, rx = false)) }
             "rtt" -> Comparator { a, b -> rtt(a.rttMillis).compareTo(rtt(b.rttMillis)) }
+            else -> null
+        }
+        return ordered(primary, desc, tie)
+    }
+
+    fun domains(col: String, desc: Boolean): Comparator<DomainRow> {
+        val tie = Comparator<DomainRow> { a, b -> a.key.compareTo(b.key) }
+        val primary: Comparator<DomainRow>? = when (col) {
+            "name" -> Comparator { a, b -> text(a.name, b.name) }
+            "lookups" -> Comparator { a, b -> a.lookups.compareTo(b.lookups) }
+            "seen" -> Comparator { a, b -> a.lastSeen.compareTo(b.lastSeen) }
+            "app" -> Comparator { a, b -> text(a.appLabel, b.appLabel) }
             else -> null
         }
         return ordered(primary, desc, tie)

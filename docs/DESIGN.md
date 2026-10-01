@@ -45,6 +45,8 @@ active engine can actually answer, and the UI keys off it.
 | Kill process | own process only | per-app **VPN firewall block**, exclude-from-VPN, App-Info deep link |
 | ARP/neighbour table | unavailable on Android 10+ | the Routes screen says so explicitly |
 | Retransmit counts | no unprivileged source | column hidden; approximation deliberately parked |
+| ICMP (ping) | no raw sockets | **echo relayed through a Linux ping socket**; the rest of ICMP is not reachable |
+| Resolver activity | other apps' DNS is invisible | **names read off the TUN**: DNS answers, and TLS SNI where the resolver is encrypted |
 | `--on-alert` shell hook | no shell | notification + optional webhook POST + broadcast Intent |
 | `--metrics` textfile | no cron | embedded HTTP endpoint, 43 gauge families |
 | `--from snapshot` | — | SAF picker → frozen UI, reads the TUI's own JSON |
@@ -64,6 +66,66 @@ analogue of the TUI's single-enumeration design, and the reason the screens
 cannot disagree with each other.
 
 ## 5. Decisions worth recording
+
+**ICMP echo is relayed; the rest of ICMP is not.** The dispatcher originally
+handled TCP and UDP and let everything else fall off the end of the `when`.
+With a default route through the TUN that is not a gap in a table, it is a
+regression in the device: turning capture on silently broke `ping` for every
+app, with no event, no counter and no sentence anywhere saying so. The fix is a
+Linux "ping" socket (`SOCK_DGRAM`/`IPPROTO_ICMP`), which Android opens to
+ordinary apps subject to `net.ipv4.ping_group_range` — so no root, and the
+kernel restricts it to echo and owns the identifier and checksum. The guest's
+identifier is held in the flow and restored on the reply; replies are matched
+to requests by sequence number, which is what makes the RTT column real for an
+ICMP row rather than borrowed from a TCP handshake.
+
+Two limits come with it and are both stated in the Conns info sheet rather than
+left to be discovered. `getConnectionOwnerUid` answers for TCP and UDP only, so
+an echo flow carries the unknown-uid sentinel and a per-app block does not stop
+a ping. And ICMP errors — Time Exceeded, Destination Unreachable — are
+delivered on a socket error queue that needs `MSG_ERRQUEUE`, which is not in
+`OsConstants`: traceroute from another app therefore still gets no answers
+while capture is on. That also settles why there is no in-app traceroute. It
+was planned, and it is not implementable with public APIs at any privilege this
+app has; promising it and shipping a hop list of timeouts would have been
+worse than not shipping it.
+
+The same socket gives the gateway probe a real echo RTT. The two methods are
+labelled rather than blended, because they measure different things: a TCP
+handshake also pays for the peer's accept path. A target the user wrote as
+`host:port` is never answered with an echo — naming a port is naming a question
+about that port.
+
+**SNI is read; nothing is decrypted.** The connection table labelled rows from
+DNS answers crossing the TUN, which is dead code on any device with Private DNS
+switched on — the default on most modern Android. There the answers are
+encrypted, no name is readable, and every row fell back to a bare IP with
+nothing explaining why. The `server_name` in a TLS ClientHello is the one name
+still in the clear, and it is read off the first in-order data segment of a
+flow whose first byte is a handshake record: one byte comparison for every flow
+that is not TLS, and no reassembly for the rare ClientHello that spans
+segments, since buffering attacker-controlled bytes for a cosmetic label is not
+a trade worth making.
+
+This sits next to "payload capture is a non-goal", so it is worth being exact
+about where the line now is. Two fields are read and no others: the answers in
+a DNS response and the server name in a ClientHello. Both are names, both are
+sent unencrypted, no key is touched and no certificate is substituted, and the
+bytes are relayed unchanged either way. Encrypted Client Hello will take this
+source away in time; when it does the field is simply absent and rows fall back
+to addresses, which is the same degradation Private DNS already produces for
+the DNS source.
+
+**Names are a second event source, with its own producer.** `EventEngine`
+derives everything from diffing two snapshots and owns `new_public_host`. Names
+are not on a snapshot at all — they arrive from the capture engine's packet
+path — so `DomainEvents` produces `new_domain` instead. Two producers reading
+one source is what put every new host in the log twice once before (§5); these
+two read different sources, and an address and a name are different subjects
+even when they describe the same server. The observations are buffered and
+written by the poll tick rather than where they are seen: launching a coroutine
+and a database write behind every DNS answer on the device is a cost the packet
+path should not carry.
 
 **No retransmission timer in the TCP proxy.** The downstream side is a TUN file
 descriptor handed to the local kernel, which does not lose segments. Flow
@@ -285,3 +347,9 @@ so the two cannot disagree again.
 Payload capture / PCAP export (this is a monitor, not a sniffer), root mode,
 TLS interception, traffic shaping beyond per-app block, and any companion
 daemon.
+
+"TLS interception" means exactly that: decrypting, substituting a certificate,
+or touching a key. Reading the cleartext `server_name` a client sends before
+any key exchange is not that, and §5 records why it is in and where its line
+sits. In-app traceroute is also out, for the reason recorded there — the ICMP
+errors it needs cannot be read through any public API.

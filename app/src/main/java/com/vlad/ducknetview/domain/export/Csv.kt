@@ -2,6 +2,7 @@ package com.vlad.ducknetview.domain.export
 
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.ConnRow
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.ServiceRow
 
@@ -80,6 +81,21 @@ object Csv {
                 s.proto.toString(), s.bindAddr, s.port.toString(), s.service,
                 s.exposure.name.lowercase(), s.uid.toString(), s.appLabel,
                 s.firstSeen.toString(), s.lastSeen.toString(), s.offBaseline.toString(),
+            )
+        },
+    )
+
+    fun domains(rows: List<DomainRow>): String = of(
+        listOf(
+            "name", "uid", "app", "package", "source", "lookups",
+            "first_seen", "last_seen", "addresses",
+        ),
+        rows.map { d ->
+            listOf(
+                d.name, d.uid.toString(), d.appLabel, d.packageName,
+                d.source.label, d.lookups.toString(),
+                d.firstSeen.toString(), d.lastSeen.toString(),
+                d.addresses.joinToString(" "),
             )
         },
     )

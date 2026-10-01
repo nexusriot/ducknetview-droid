@@ -168,6 +168,7 @@ fun infoFor(tab: Tab, caps: Capabilities, engine: EngineMode): List<Pair<String,
         Tab.SERVICES -> servicesInfo(capturing)
         Tab.APPS -> appsInfo(capturing, caps)
         Tab.CONNECTIONS -> connectionsInfo(capturing, caps)
+        Tab.DOMAINS -> domainsInfo(capturing)
         Tab.ROUTES -> routesInfo(capturing)
         Tab.EVENTS -> eventsInfo(capturing)
     }
@@ -231,9 +232,11 @@ private fun overviewInfo(capturing: Boolean, caps: Capabilities): List<Pair<Stri
                 "are talking to."
         },
         "Latency" to
-            "Measured by opening a TCP connection to each target and timing the " +
-            "handshake. ICMP ping needs a raw socket, which apps do not get, so this " +
-            "is a TCP handshake time and is labelled as such.",
+            "The gateway is measured with a real ICMP echo where the kernel allows an " +
+            "app to open a ping socket — no root needed, and it times the network " +
+            "alone. Where it does not, and for any target you give as host:port, the " +
+            "figure is the time to complete a TCP handshake, which also pays for the " +
+            "peer's accept path. Each reading says which method produced it.",
         "External IP" to
             "Optional and the only lookup that leaves the device: one HTTPS request to " +
             "ipify. Turn it off in Settings and nothing goes out.",
@@ -349,6 +352,14 @@ private fun connectionsInfo(capturing: Boolean, caps: Capabilities): List<Pair<S
             "Retransmits" to
                 "No unprivileged source exists for retransmit counts, so the column is " +
                 "hidden rather than approximated.",
+            "ICMP" to
+                "Echo requests are relayed through a kernel ping socket, so ping keeps " +
+                "working while capture is on and its rows carry a measured round trip. " +
+                "Two limits, both from the platform: getConnectionOwnerUid answers for " +
+                "TCP and UDP only, so an echo row names no app and a blocked app can " +
+                "still ping; and the rest of ICMP is not relayed, because replies such " +
+                "as Time Exceeded arrive on a socket error queue no public API can " +
+                "read, so traceroute from another app will not get answers.",
             "Closed connections" to
                 "Kept with their true lifetime totals, because the proxy saw the whole " +
                 "connection from SYN to close.",
@@ -357,6 +368,41 @@ private fun connectionsInfo(capturing: Boolean, caps: Capabilities): List<Pair<S
                 "not a sniffer.",
         )
     }
+
+private fun domainsInfo(capturing: Boolean): List<Pair<String, String>> = if (!capturing) {
+    listOf(
+        "Needs capture" to
+            "Names are read off the traffic the capture engine relays. Android gives " +
+            "an app no way to see another app's DNS activity otherwise, so this " +
+            "screen is empty until capture is on.",
+        "Nothing is resolved here" to
+            "The app issues no lookups of its own to fill this screen. It reads the " +
+            "answers already crossing the device.",
+    )
+} else {
+    listOf(
+        "Where names come from" to
+            "Two sources, and each row says which. DNS: the answer to a lookup, read " +
+            "as it crosses the TUN. SNI: the server name a TLS client sends in the " +
+            "clear at the start of a handshake.",
+        "Private DNS changes everything" to
+            "With an encrypted resolver configured — the default on most modern " +
+            "Android — no DNS answer is readable at all, and every name here comes " +
+            "from SNI. An empty DNS column on such a network is the encryption " +
+            "working, not a gap in this table.",
+        "This is not TLS interception" to
+            "SNI is sent unencrypted before any key exchange. Nothing is decrypted, " +
+            "no certificate is substituted and no key is touched; the handshake is " +
+            "relayed byte for byte either way. Encrypted Client Hello will remove " +
+            "this source in time, and rows will simply fall back to addresses.",
+        "Attribution" to
+            "A name is attributed to the app whose flow carried it, so the same CDN " +
+            "reached by two apps is two rows rather than one.",
+        "What is kept" to
+            "The name, who asked, how often, when, and the addresses it resolved to. " +
+            "No payload, no query log beyond that, 30 days, and a Clear button.",
+    )
+}
 
 private fun routesInfo(capturing: Boolean): List<Pair<String, String>> = listOf(
     "Routes and DNS" to

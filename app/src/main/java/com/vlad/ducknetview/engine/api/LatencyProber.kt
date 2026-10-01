@@ -1,5 +1,6 @@
 package com.vlad.ducknetview.engine.api
 
+import com.vlad.ducknetview.domain.model.LatencyMethod
 import com.vlad.ducknetview.domain.model.LatencySample
 import java.io.IOException
 import java.net.ConnectException
@@ -17,23 +18,36 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /**
- * TCP-handshake round-trip timing, the Android port of `probe.MeasureLatency`.
+ * Round-trip timing, the Android port of `probe.MeasureLatency`.
  *
- * ICMP ping needs a raw socket, so the only portable "how far away is the
- * network" measurement an unprivileged app can make is the time to complete (or
- * be refused) a TCP connect.
+ * Two methods, reported as two different things rather than blended. A TCP
+ * connect to a named port is always available and is what a user's own
+ * `host:port` target asks for — but it times the peer's accept path as well as
+ * the network. ICMP echo times only the network, and Android does allow it
+ * without root through a Linux ping socket, so the gateway probe prefers it:
+ * "how far away is my network" is exactly the question echo answers best. A
+ * device whose kernel refuses echo sockets falls back and is none the wiser.
  */
-class LatencyProber(private val historySize: Int = HISTORY) {
+class LatencyProber(
+    private val historySize: Int = HISTORY,
+    private val echo: EchoProbe = EchoProbe.Unavailable,
+) {
 
     private val history = LinkedHashMap<String, ArrayDeque<Float>>()
 
     suspend fun probe(target: String, timeoutMs: Int = DEFAULT_TIMEOUT_MS): LatencySample =
         probeLabeled(target, labelFor(target), timeoutMs)
 
+    /**
+     * @param preferEcho try ICMP first. Only the gateway sets it: a target the
+     *   user wrote as `host:port` named that port deliberately, and answering
+     *   with an echo to the host would measure a different thing than was asked.
+     */
     suspend fun probeLabeled(
         target: String,
         label: String,
         timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        preferEcho: Boolean = false,
     ): LatencySample {
         val hostPort = parseTarget(target)
             ?: return withHistory(
@@ -46,6 +60,20 @@ class LatencyProber(private val historySize: Int = HISTORY) {
                 )
             )
         val (host, port) = hostPort
+        if (preferEcho) {
+            val icmp = runCatching { echo.rttMillis(host, timeoutMs) }.getOrNull()
+            if (icmp != null) {
+                return withHistory(
+                    LatencySample(
+                        target = target,
+                        label = label,
+                        millis = icmp,
+                        ok = true,
+                        method = LatencyMethod.ICMP,
+                    )
+                )
+            }
+        }
         return withContext(Dispatchers.IO) {
             var failure: Exception? = null
             val start = System.nanoTime()
@@ -78,7 +106,7 @@ class LatencyProber(private val historySize: Int = HISTORY) {
         val gw = gateway?.trim()?.takeIf { it.isNotEmpty() }
         if (gw != null) {
             val addr = joinHostPort(gw, GATEWAY_PORT)
-            jobs += async { probeLabeled(addr, GATEWAY_LABEL, timeoutMs) }
+            jobs += async { probeLabeled(addr, GATEWAY_LABEL, timeoutMs, preferEcho = true) }
         }
         for (t in targets) {
             val trimmed = t.trim()

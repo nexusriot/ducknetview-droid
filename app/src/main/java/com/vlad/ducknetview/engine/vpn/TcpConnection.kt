@@ -4,6 +4,7 @@ import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.engine.vpn.packet.Packets
 import com.vlad.ducknetview.engine.vpn.packet.TcpFlag
 import com.vlad.ducknetview.engine.vpn.packet.TcpHeader
+import com.vlad.ducknetview.engine.vpn.packet.TlsPeek
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,6 +38,7 @@ class TcpConnection(
     private val protect: (Socket) -> Boolean,
     private val scope: CoroutineScope,
     private val mtu: Int,
+    private val onSni: (String) -> Unit = {},
     private val onClosed: (FlowKey) -> Unit,
 ) {
     private val key = flow.key
@@ -57,6 +59,9 @@ class TcpConnection(
     // close() on whichever coroutine tears the flow down: a plain ArrayList
     // here throws ConcurrentModificationException under real traffic.
     private val jobs = CopyOnWriteArrayList<Job>()
+
+    /** The SNI peek looks at the first in-order payload segment and no other. */
+    private var sniChecked = false
 
     @Volatile private var finSent = false
     @Volatile private var finReceived = false
@@ -136,6 +141,7 @@ class TcpConnection(
         if (tcp.payloadLength > 0) {
             when {
                 tcp.seq == theirSeq -> {
+                    peekSni(buf, tcp)
                     // The read buffer is reused for the next packet, so the
                     // payload is copied into a pooled buffer the upstream pump
                     // owns from the moment the send succeeds.
@@ -165,6 +171,22 @@ class TcpConnection(
             upstreamOut.close()
             if (finSent) finish()
         }
+    }
+
+    /**
+     * Read the server name out of a TLS ClientHello on its way past.
+     *
+     * Only the first in-order data segment is looked at, and only when its
+     * first bytes are a TLS handshake record, so the cost on a flow that is not
+     * TLS is one byte comparison. The bytes are relayed unchanged either way —
+     * nothing here decrypts, rewrites or delays anything.
+     */
+    private fun peekSni(buf: ByteArray, tcp: TcpHeader) {
+        if (sniChecked) return
+        sniChecked = true
+        if (!TlsPeek.looksLikeHandshake(buf, tcp.payloadOffset, tcp.payloadLength)) return
+        val name = TlsPeek.serverName(buf, tcp.payloadOffset, tcp.payloadLength) ?: return
+        runCatching { onSni(name) }
     }
 
     private suspend fun pumpUpstreamWrites(ch: SocketChannel) {

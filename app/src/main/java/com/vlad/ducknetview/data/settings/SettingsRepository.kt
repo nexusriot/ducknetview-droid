@@ -66,6 +66,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         val appsSortDesc = booleanPreferencesKey("appsSortDesc")
         val servicesSortCol = stringPreferencesKey("servicesSortCol")
         val servicesSortDesc = booleanPreferencesKey("servicesSortDesc")
+        val domainsSortCol = stringPreferencesKey("domainsSortCol")
+        val domainsSortDesc = booleanPreferencesKey("domainsSortDesc")
         val externalIpEnabled = booleanPreferencesKey("externalIpEnabled")
         val latencyTargets = stringPreferencesKey("latencyTargets")
         val watchlist = stringPreferencesKey("watchlist")
@@ -110,6 +112,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
             appsSortDesc = p.bool(Keys.appsSortDesc, d.appsSortDesc),
             servicesSortCol = p.text(Keys.servicesSortCol, d.servicesSortCol),
             servicesSortDesc = p.bool(Keys.servicesSortDesc, d.servicesSortDesc),
+            domainsSortCol = p.text(Keys.domainsSortCol, d.domainsSortCol),
+            domainsSortDesc = p.bool(Keys.domainsSortDesc, d.domainsSortDesc),
             externalIpEnabled = p.bool(Keys.externalIpEnabled, d.externalIpEnabled),
             latencyTargets = p.parsed(Keys.latencyTargets, d.latencyTargets, Codec::decodeList),
             watchlist = p.parsed(Keys.watchlist, d.watchlist, Codec::decodeList),
@@ -149,6 +153,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         p[Keys.appsSortDesc] = s.appsSortDesc
         p[Keys.servicesSortCol] = s.servicesSortCol
         p[Keys.servicesSortDesc] = s.servicesSortDesc
+        p[Keys.domainsSortCol] = s.domainsSortCol
+        p[Keys.domainsSortDesc] = s.domainsSortDesc
         p[Keys.externalIpEnabled] = s.externalIpEnabled
         p[Keys.latencyTargets] = Codec.encodeList(s.latencyTargets)
         p[Keys.watchlist] = Codec.encodeList(s.watchlist)

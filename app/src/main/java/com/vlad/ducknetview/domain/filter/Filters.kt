@@ -3,6 +3,7 @@ package com.vlad.ducknetview.domain.filter
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.ConnRow
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Exposure
 import com.vlad.ducknetview.domain.model.IpVersionFilter
 import com.vlad.ducknetview.domain.model.Proto
@@ -33,6 +34,19 @@ object Filters {
         if (!f.any) return rows
         return rows.filter { r ->
             (!f.userAppsOnly || (if (userAppUids.isEmpty()) !r.isSystem else r.uid in userAppUids)) &&
+                (f.uid == null || r.uid == f.uid)
+        }
+    }
+
+    /**
+     * A name has no protocol, address family or connection state, so only the
+     * owner filters apply. Chips that cannot mean anything here are hidden by
+     * the screen rather than silently ignored.
+     */
+    fun domains(rows: List<DomainRow>, f: QuickFilters, userAppUids: Set<Int>): List<DomainRow> {
+        if (!f.any) return rows
+        return rows.filter { r ->
+            (!f.userAppsOnly || isUserApp(r.uid, userAppUids)) &&
                 (f.uid == null || r.uid == f.uid)
         }
     }

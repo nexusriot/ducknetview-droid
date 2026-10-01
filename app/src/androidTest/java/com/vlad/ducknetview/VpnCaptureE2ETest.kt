@@ -7,7 +7,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.engine.vpn.DuckVpnService
+import com.vlad.ducknetview.engine.vpn.PingSockets
 import com.vlad.ducknetview.engine.vpn.VpnBridge
+import com.vlad.ducknetview.engine.vpn.packet.Icmp
 import org.junit.After
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -16,6 +18,8 @@ import org.junit.Before
 import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.junit.runners.MethodSorters
 import java.io.BufferedReader
 import java.net.HttpURLConnection
@@ -197,6 +201,93 @@ class VpnCaptureE2ETest {
                 snapshotFlows().filter { it.dstPort == 443 }.map { it.uid },
             flow,
         )
+    }
+
+    /**
+     * Ping through the TUN.
+     *
+     * This is the regression the relay exists for: the dispatcher knew only TCP
+     * and UDP, so with a default route through the TUN every echo request on
+     * the device was dropped with nothing said about it — turning capture on
+     * silently broke ping for every other app.
+     *
+     * The test's own echo socket is unprotected, so its packets go into the TUN
+     * exactly as another app's would; the relay answers them through a socket
+     * of its own that is protected.
+     */
+    @Test
+    fun t08_icmpEchoIsRelayedAndTimed() {
+        val socket = PingSockets.open(4, timeoutMs = 1000)
+        assumeTrue(
+            "this kernel does not allow unprivileged ICMP sockets " +
+                "(net.ipv4.ping_group_range)",
+            socket != null,
+        )
+        try {
+            val target = InetAddress.getByName(icmpTarget())
+            val request = Icmp.buildEchoRequest(4, seq = 1, payload = ByteArray(32))
+            repeat(3) { socket!!.send(request, 0, request.size, target) }
+
+            val flow = observe(20_000) { it.proto == Proto.ICMP && it.tx > 0 }
+            assertNotNull(
+                "the echo request should have produced a captured ICMP flow; " +
+                    "protocols seen: " + snapshotFlows().map { it.proto }.distinct(),
+                flow,
+            )
+
+            // A reply proves the whole round trip: out through the relay's own
+            // socket and back into the TUN under the guest's identifier. A host
+            // that filters ICMP is the other explanation, so the message says so.
+            val answered = observe(20_000) { it.proto == Proto.ICMP && it.rx > 0 }
+            assertNotNull(
+                "no echo reply came back through the relay; $target may be " +
+                    "filtering ICMP on this network",
+                answered,
+            )
+            assertTrue("the round trip should have been measured", answered!!.rtt >= 0)
+        } finally {
+            socket?.close()
+        }
+    }
+
+    /**
+     * A name learnt from a TLS handshake and carried all the way into storage.
+     *
+     * This crosses the one seam no JVM test can: the ClientHello is peeked at on
+     * the packet path, handed to the engine through VpnBridge, batched by the
+     * poll tick and written to Room. It matters most on a device with Private
+     * DNS on, where SNI is the only name the app can see at all.
+     */
+    @Test
+    fun t09_aNameIsLearntFromTrafficAndStored() {
+        val app = context.applicationContext as DuckApp
+        val host = "connectivitycheck.gstatic.com"
+        runBlocking { app.deps.domainRepo.clear() }
+
+        repeat(2) { fetch("https://$host/generate_204") }
+
+        var stored = emptyList<String>()
+        waitUntil(30_000) {
+            stored = runBlocking { app.deps.domainRepo.recent.first() }.map { it.name }
+            stored.any { it == host }
+        }
+        assertTrue(
+            "the name was never recorded; stored instead: $stored",
+            stored.any { it == host },
+        )
+    }
+
+    /**
+     * The default gateway when it is an IPv4 address: one LAN hop is far more
+     * likely to answer an echo than a public resolver on a filtered network.
+     */
+    private fun icmpTarget(): String {
+        val app = context.applicationContext as DuckApp
+        val gateway = app.deps.engine.snapshot.value.networks
+            .firstOrNull { it.isDefault }
+            ?.gateway
+            ?.substringBefore('%')
+        return gateway?.takeIf { it.count { c -> c == '.' } == 3 } ?: "8.8.8.8"
     }
 
     private fun snapshotFlows(): List<Observed> {

@@ -240,4 +240,31 @@ class AppUiE2ETest {
         }
         println("USAGE rows=${days.size}")
     }
+
+    /**
+     * The Domains screen against whatever this device has actually recorded.
+     *
+     * Its store is written from the capture engine's packet path and read back
+     * through Room, which is a seam no JVM test crosses end to end. The screen
+     * has to compose whether the table is empty, full of DNS rows, or — on a
+     * device with Private DNS on, which is the default — full of SNI ones.
+     */
+    @Test
+    fun t10_domainsScreenComposesAgainstThisDevicesStoredNames() {
+        goTo(Tab.DOMAINS)
+        waitForTag("domains:summary")
+        rule.onNodeWithTag("domains:summary", useUnmergedTree = true).assertExists()
+
+        val app = InstrumentationRegistry.getInstrumentation()
+            .targetContext.applicationContext as DuckApp
+        val rows = runBlocking { app.deps.domainRepo.recent.first() }
+        for (row in rows) {
+            // Names go into the UI straight off the wire, so a stored one that
+            // is empty or absurd means the parser let something through.
+            assertTrue("stored a blank name", row.name.isNotEmpty())
+            assertTrue("stored an implausible name: ${row.name}", row.name.length <= 253)
+            assertTrue("stored a name with no sightings: ${row.name}", row.lookups >= 1)
+        }
+        println("DOMAINS rows=${rows.size} sni=${rows.count { it.source.name == "SNI" }}")
+    }
 }

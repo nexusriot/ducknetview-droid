@@ -102,11 +102,15 @@ class FlowTable(private val closedLimit: Int = 200) {
         r
     }
 
-    /** Expire idle UDP flows and TCP flows whose peer vanished without a FIN. */
+    /**
+     * Expire idle flows: TCP connections whose peer vanished without a FIN get
+     * the long window, and the connectionless protocols — UDP and ICMP echo,
+     * neither of which has a teardown to wait for — get the short one.
+     */
     fun expire(now: Long, udpIdleMs: Long, tcpIdleMs: Long, onExpire: (Flow) -> Unit) {
         for (f in flows.values) {
             val idle = now - f.lastSeen
-            val limit = if (f.key.proto == Proto.UDP) udpIdleMs else tcpIdleMs
+            val limit = if (f.key.proto == Proto.TCP) tcpIdleMs else udpIdleMs
             if (idle > limit) onExpire(f)
         }
     }
@@ -137,7 +141,9 @@ class FlowTable(private val closedLimit: Int = 200) {
         uid = f.uid,
         appLabel = appLabel,
         packageName = packageName,
-        service = ServiceNames.of(f.key.dstPort, f.key.proto),
+        // ICMP echo addresses a host rather than a service, and its "port"
+        // is the echo identifier, so a port lookup here would invent a name.
+        service = if (f.key.proto == Proto.ICMP) "echo" else ServiceNames.of(f.key.dstPort, f.key.proto),
         scope = IpScope.of(f.key.dstIp),
         rxBytes = f.rx.get(),
         txBytes = f.tx.get(),

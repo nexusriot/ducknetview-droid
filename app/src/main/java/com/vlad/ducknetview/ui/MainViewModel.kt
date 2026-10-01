@@ -20,6 +20,7 @@ import com.vlad.ducknetview.domain.export.SnapshotJson
 import com.vlad.ducknetview.domain.filter.Filters
 import com.vlad.ducknetview.domain.group.Grouping
 import com.vlad.ducknetview.domain.model.AppSettings
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Capabilities
 import com.vlad.ducknetview.domain.model.EngineMode
 import com.vlad.ducknetview.domain.model.EventLevelFilter
@@ -30,6 +31,7 @@ import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.StateFilter
 import com.vlad.ducknetview.domain.model.Transport
 import com.vlad.ducknetview.domain.search.Search
+import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.domain.search.SearchResult
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.sort.Sorters
@@ -72,6 +74,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         val frozen: FrozenSnapshot?,
         val usage: List<DailyUsage>,
         val usageLoading: Boolean,
+        val domains: List<DomainRow> = emptyList(),
         val metricsRunning: Boolean = false,
         val metricsError: String? = null,
         val matchCursor: Int = -1,
@@ -88,6 +91,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         .combine(deps.metricsServer.lastError) { m, e -> m.copy(metricsError = e) }
         .combine(matchCursorFlow) { m, c -> m.copy(matchCursor = c) }
         .combine(permissionEpochFlow) { m, e -> m.copy(permissionEpoch = e) }
+        .combine(deps.domainRepo.recent) { m, d -> m.copy(domains = d) }
 
     val tab: StateFlow<Tab> = tabFlow
 
@@ -137,6 +141,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Sorters.apps(settings.appsSortCol, settings.appsSortDesc, settings.throughputMode)
         )
 
+        // The stored row knows a uid; the label for it belongs to the catalog,
+        // which can change under a row (an app updating its name) and so is
+        // resolved on read rather than frozen into the database.
+        val watchlist = watchlistOf(settings.watchlist)
+        val domainsLabelled = misc.domains.map { d ->
+            val app = deps.catalog.row(d.uid)
+            d.copy(
+                appLabel = app.label,
+                packageName = app.packageName,
+                watchlisted = !watchlist.isEmpty &&
+                    (watchlist.matches(d.name, d.name) ||
+                        d.addresses.any { watchlist.matches(it, d.name) }),
+            )
+        }
+        val domainsFiltered = Filters.domains(domainsLabelled, filters, userUids)
+        val domainsSearched = Search.apply(domainsFiltered, matcher, settings.searchMode) { d ->
+            listOf(d.name, d.appLabel, d.packageName, d.addresses.joinToString(" "))
+        }
+        val domains = domainsSearched.items.sortedWith(
+            Sorters.domains(settings.domainsSortCol, settings.domainsSortDesc)
+        )
+
         val servicesFiltered = Filters.services(snap.services, filters)
         val servicesSearched = Search.apply(servicesFiltered, matcher, settings.searchMode) { s ->
             listOf(s.port.toString(), s.bindAddr, s.proto.toString(), s.service)
@@ -167,6 +193,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Tab.CONNECTIONS -> connsSearched
             Tab.APPS -> appsSearched
             Tab.SERVICES -> servicesSearched
+            Tab.DOMAINS -> domainsSearched
             Tab.EVENTS -> eventsSearched
             else -> null
         }
@@ -184,6 +211,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             groups = Grouping.of(conns, settings.revDns),
             apps = apps,
             services = services,
+            domains = domains,
             events = eventsSearched.items,
             eventFilter = eventFilter,
             unackedAlerts = events.count {
@@ -197,6 +225,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
                 snap.networks.none { it.transport == Transport.VPN },
             vpnRunning = vpnRunning && frozen == null,
             usageAccessGranted = deps.usage.hasAccess(),
+            privateDns = snap.networks.firstOrNull { it.isDefault }?.privateDns
+                ?: snap.networks.firstNotNullOfOrNull { it.privateDns },
             status = status,
             matchCount = visibleSearch?.matchCount ?: 0,
             matchedRows = if (highlighting) matched else emptySet(),
@@ -240,6 +270,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         val default = snap.networks.firstOrNull { it.isDefault }?.addresses.orEmpty()
         return MetricsServer.lanUrl(default, port)
             ?: MetricsServer.lanUrl(snap.networks.filter { !it.isNoise }.flatMap { it.addresses }, port)
+    }
+
+    /**
+     * Compiling the watchlist means compiling its regexes, which is too much to
+     * redo on every snapshot. The entry list is the identity: it changes only
+     * when the user edits it.
+     */
+    private var watchlistCache: Pair<List<String>, Watchlist>? = null
+
+    private fun watchlistOf(entries: List<String>): Watchlist {
+        val cached = watchlistCache
+        if (cached != null && cached.first == entries) return cached.second
+        val built = Watchlist(entries)
+        watchlistCache = entries to built
+        return built
     }
 
     private fun edit(block: (AppSettings) -> AppSettings) {
@@ -354,6 +399,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             "services" ->
                 if (s.servicesSortCol == column) s.copy(servicesSortDesc = !s.servicesSortDesc)
                 else s.copy(servicesSortCol = column, servicesSortDesc = false)
+            "domains" ->
+                if (s.domainsSortCol == column) s.copy(domainsSortDesc = !s.domainsSortDesc)
+                else s.copy(domainsSortCol = column, domainsSortDesc = true)
             else -> s
         }
     }
@@ -498,6 +546,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Tab.CONNECTIONS -> Csv.conns(s.conns, s.snapshot.atMillis)
             Tab.APPS -> Csv.apps(s.apps)
             Tab.SERVICES -> Csv.services(s.services)
+            Tab.DOMAINS -> Csv.domains(s.domains)
             Tab.EVENTS -> Csv.events(s.events)
             else -> null
         }
@@ -543,6 +592,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
     override fun ackAlerts() {
         edit { it.copy(alertsAckedAt = System.currentTimeMillis()) }
         status("alerts acknowledged")
+    }
+
+    override fun clearDomains() {
+        viewModelScope.launch { deps.domainRepo.clear() }
+        status("name history cleared")
     }
 
     override fun clearEvents() {

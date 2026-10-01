@@ -1,6 +1,7 @@
 package com.vlad.ducknetview.data
 
 import com.vlad.ducknetview.data.db.ClosedConnDao
+import com.vlad.ducknetview.data.db.DomainDao
 import com.vlad.ducknetview.data.db.EventDao
 import com.vlad.ducknetview.data.db.HostSeenDao
 import com.vlad.ducknetview.data.db.HostSeenEntity
@@ -9,8 +10,11 @@ import com.vlad.ducknetview.data.db.toDomain
 import com.vlad.ducknetview.data.db.toEntity
 import com.vlad.ducknetview.domain.export.Csv
 import com.vlad.ducknetview.domain.model.ClosedConn
+import com.vlad.ducknetview.domain.model.DomainObservation
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventLevel
+import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.usage.DailyUsage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -193,5 +197,95 @@ class HostSeenRepository(private val dao: HostSeenDao) {
 
     companion object {
         const val MAX_HOSTS = 4096
+    }
+}
+
+/**
+ * Every name the device has asked for, with who asked and when.
+ *
+ * The capture engine already read these: DNS answers crossing the TUN were
+ * parsed to label one column of the connection table and then dropped, and the
+ * question — the part a person actually recognises — was never kept at all.
+ * This is that data given somewhere to live.
+ *
+ * Bounded two ways, because a browser session can mint hundreds of names: by
+ * age, so the store reflects recent behaviour, and by row count, so a device
+ * that talks to thousands of hosts cannot grow it without limit.
+ */
+class DomainRepository(
+    private val dao: DomainDao,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+
+    private val lock = Mutex()
+
+    val recent: Flow<List<DomainRow>> =
+        dao.recent(RECENT_LIMIT).map { rows -> rows.map { it.toDomain() } }
+
+    /**
+     * Folds observations into the store and returns the rows whose name was
+     * recorded for the first time. The caller turns those into events — the
+     * repository deliberately does not, so that what counts as new is decided
+     * by the one component that can also see the watchlist.
+     *
+     * Held under a mutex: the capture engine and the poll tick both reach here,
+     * and a read-modify-write race would lose lookups or resurrect a row that
+     * pruning had just dropped.
+     */
+    suspend fun record(observations: List<DomainObservation>): List<DomainRow> = lock.withLock {
+        if (observations.isEmpty()) return@withLock emptyList()
+        val fresh = ArrayList<DomainRow>()
+        for (o in observations) {
+            if (o.name.isEmpty()) continue
+            val stored = dao.find(o.name, o.uid)
+            val merged = merge(stored?.toDomain(), o)
+            // The row id has to be carried across or the upsert inserts a
+            // duplicate that the unique index then rejects.
+            dao.upsert(merged.toEntity().copy(id = stored?.id ?: 0L))
+            if (stored == null) fresh += merged
+        }
+        if (fresh.isNotEmpty()) {
+            dao.pruneOlderThan(now() - RETENTION_MILLIS)
+            dao.trimTo(MAX_ROWS)
+        }
+        fresh
+    }
+
+    suspend fun clear() = dao.clear()
+
+    suspend fun exportCsv(): String = Csv.domains(dao.allForExport().map { it.toDomain() })
+
+    companion object {
+        const val RECENT_LIMIT = 500
+        const val MAX_ROWS = 2000
+        const val RETENTION_DAYS = 30
+        const val RETENTION_MILLIS = RETENTION_DAYS * 24L * 60L * 60L * 1000L
+
+        /** A name resolving to more than this is a CDN; the rest adds nothing. */
+        const val MAX_ADDRESSES = 8
+
+        fun merge(existing: DomainRow?, o: DomainObservation): DomainRow {
+            if (existing == null) {
+                return DomainRow(
+                    name = o.name,
+                    uid = o.uid,
+                    source = o.source,
+                    lookups = 1,
+                    firstSeen = o.at,
+                    lastSeen = o.at,
+                    addresses = o.addresses.distinct().take(MAX_ADDRESSES),
+                )
+            }
+            return existing.copy(
+                lookups = existing.lookups + 1,
+                firstSeen = minOf(existing.firstSeen, o.at),
+                lastSeen = maxOf(existing.lastSeen, o.at),
+                // A DNS sighting is the stronger statement — it is what the
+                // device asked its resolver — so a later SNI sighting of the
+                // same name never downgrades the row's attribution.
+                source = if (existing.source == NameSource.DNS) NameSource.DNS else o.source,
+                addresses = (existing.addresses + o.addresses).distinct().take(MAX_ADDRESSES),
+            )
+        }
     }
 }

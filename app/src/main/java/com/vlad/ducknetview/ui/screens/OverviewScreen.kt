@@ -278,6 +278,15 @@ private fun LatencyRow(sample: LatencySample) {
             )
         }
         Sparkline(values = sample.history, height = 24.dp)
+        // Which method produced the figure, because the two are not the same
+        // measurement: an echo times the network, a handshake also times the
+        // peer's accept path.
+        Text(
+            text = sample.method.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("latency:method:${sample.target}"),
+        )
         val note = sample.note
         if (note != null && !sample.ok) {
             Text(

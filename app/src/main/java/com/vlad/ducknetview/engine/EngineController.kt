@@ -9,12 +9,15 @@ import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.vlad.ducknetview.data.ClosedConnRepository
+import com.vlad.ducknetview.data.DomainRepository
 import com.vlad.ducknetview.data.EventRepository
 import com.vlad.ducknetview.data.HostSeenRepository
 import com.vlad.ducknetview.domain.alerts.AlertRules
 import com.vlad.ducknetview.domain.baseline.Baseline
+import com.vlad.ducknetview.domain.events.DomainEvents
 import com.vlad.ducknetview.domain.events.EventEngine
 import com.vlad.ducknetview.domain.model.AppSettings
+import com.vlad.ducknetview.domain.model.DomainObservation
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.LatencySample
@@ -63,6 +66,7 @@ class EngineController(
     private val events: EventRepository,
     private val closedRepo: ClosedConnRepository,
     private val hostSeen: HostSeenRepository,
+    private val domains: DomainRepository,
     private val rates: RateTracker,
 ) {
     private val totals = SessionTotals()
@@ -97,6 +101,19 @@ class EngineController(
     /** Conflated so a burst of wakeups costs one early tick, not a queue of them. */
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
+    /**
+     * Names observed since the last tick, waiting to be written.
+     *
+     * Buffered rather than written where they are seen: the sink is called from
+     * the capture engine's packet path, and launching a coroutine per DNS answer
+     * would put a database write behind every lookup on the device. The poll
+     * tick drains this and writes the batch, which is the cadence everything
+     * else in this class already runs on. Bounded, so a name flood is dropped
+     * rather than held.
+     */
+    private val pendingDomains = ArrayList<DomainObservation>()
+    private val domainLock = Any()
+
     @Volatile private var interactive: Boolean = true
     private var screenReceiver: BroadcastReceiver? = null
 
@@ -109,6 +126,7 @@ class EngineController(
             row.label to row.packageName
         }
         VpnBridge.dnsSink = { ip, name -> rdns.put(ip, name) }
+        VpnBridge.domainSink = { observation -> queueDomain(observation) }
         // Driven by the capture service's expiry tick (every 5 s), not by the
         // poll loop: the shade does not need a per-second redraw, and rebuilding
         // a notification at poll rate is a battery cost of its own.
@@ -250,6 +268,20 @@ class EngineController(
         }
     }
 
+    private fun queueDomain(observation: DomainObservation) {
+        synchronized(domainLock) {
+            if (pendingDomains.size >= MAX_PENDING_DOMAINS) return
+            pendingDomains += observation
+        }
+    }
+
+    private fun drainDomains(): List<DomainObservation> = synchronized(domainLock) {
+        if (pendingDomains.isEmpty()) return emptyList()
+        val out = pendingDomains.toList()
+        pendingDomains.clear()
+        out
+    }
+
     private suspend fun tick(now: Long) {
         val sample = api.sample(now)
         val flows = VpnBridge.table
@@ -279,6 +311,22 @@ class EngineController(
         // persistent store, so the next process start seeds its dedupe from
         // them instead of replaying every known host as first contact.
         for (host in eventEngine.lastNewHosts) hostSeen.isNew(host, snap.atMillis)
+        // Names are not on the snapshot, so they are a second source with its
+        // own producer. The two cannot double-report: this one is keyed on a
+        // name and the engine's new_public_host on an address.
+        //
+        // The store keeps a uid, not a label — an app can rename itself, so the
+        // name is resolved on read rather than frozen into the database. That
+        // leaves the rows it hands back unlabelled, and a log line reading
+        // "first contact with ads.example.com" without saying which app asked
+        // is most of the value missing.
+        val freshDomains = runCatching { domains.record(drainDomains()) }
+            .getOrDefault(emptyList())
+            .map { row ->
+                val app = catalog.row(row.uid)
+                row.copy(appLabel = app.label, packageName = app.packageName)
+            }
+        produced += DomainEvents.of(freshDomains, watchlist, now)
         produced += alertRules.evaluate(snap, settings, now)
         if (produced.isNotEmpty()) {
             events.record(produced)
@@ -337,6 +385,8 @@ class EngineController(
             .ifBlank { "this device" }
 
     companion object {
+        /** One busy browser tab's worth of names; past this a tick is dropping. */
+        private const val MAX_PENDING_DOMAINS = 512
         private const val LATENCY_INTERVAL_MS = 15_000L
         private const val USAGE_INTERVAL_MS = 120_000L
         val BOOT_ELAPSED: Long get() = SystemClock.elapsedRealtime()

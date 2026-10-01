@@ -3,9 +3,11 @@ package com.vlad.ducknetview.data.db
 import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.ConnState
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
+import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.domain.model.Scope
 import com.vlad.ducknetview.domain.model.fmtAddr
@@ -241,3 +243,26 @@ fun DailyUsageEntity.toDomain(): DailyUsage = DailyUsage(
     apps = Codec.decodeMap(appsJson),
     hosts = Codec.decodeMap(hostsJson),
 )
+
+fun DomainRow.toEntity(): DomainEntity = DomainEntity(
+    name = name,
+    uid = uid,
+    source = source.name,
+    lookups = lookups,
+    firstSeen = firstSeen,
+    lastSeen = lastSeen,
+    addresses = Codec.encodeList(addresses),
+)
+
+fun DomainEntity.toDomain(): DomainRow = DomainRow(
+    name = name,
+    uid = uid,
+    source = decodeNameSource(source),
+    lookups = lookups,
+    firstSeen = firstSeen,
+    lastSeen = lastSeen,
+    addresses = Codec.decodeList(addresses),
+)
+
+private fun decodeNameSource(s: String): NameSource =
+    NameSource.entries.firstOrNull { it.name == s } ?: NameSource.DNS

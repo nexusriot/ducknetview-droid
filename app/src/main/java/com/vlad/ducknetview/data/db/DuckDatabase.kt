@@ -15,8 +15,9 @@ import java.time.ZoneId
         DailyUsageEntity::class,
         ClosedConnEntity::class,
         HostSeenEntity::class,
+        DomainEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class DuckDatabase : RoomDatabase() {
@@ -25,6 +26,7 @@ abstract class DuckDatabase : RoomDatabase() {
     abstract fun usage(): UsageDao
     abstract fun closedConns(): ClosedConnDao
     abstract fun hostsSeen(): HostSeenDao
+    abstract fun domains(): DomainDao
 
     companion object {
         const val NAME = "ducknetview.db"
@@ -60,6 +62,39 @@ abstract class DuckDatabase : RoomDatabase() {
         }
 
         /**
+         * Adds the name store behind the Domains screen.
+         *
+         * Hand-written rather than destructive: the tables beside it hold the
+         * event log and forty days of usage history, and throwing those away to
+         * add an unrelated table would be the migration doing more damage than
+         * the feature is worth. The statements mirror what Room generates for
+         * [DomainEntity], and `DomainMigrationTest` opens a v2 database, runs
+         * this, and lets Room validate the result against the schema.
+         */
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `domains` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`uid` INTEGER NOT NULL, " +
+                        "`source` TEXT NOT NULL, " +
+                        "`lookups` INTEGER NOT NULL, " +
+                        "`firstSeen` INTEGER NOT NULL, " +
+                        "`lastSeen` INTEGER NOT NULL, " +
+                        "`addresses` TEXT NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_domains_name_uid` " +
+                        "ON `domains` (`name`, `uid`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_domains_lastSeen` ON `domains` (`lastSeen`)"
+                )
+            }
+        }
+
+        /**
          * No real day number reaches this, and every millisecond timestamp
          * since 1973 exceeds it, so it separates the two unambiguously.
          */
@@ -78,7 +113,7 @@ abstract class DuckDatabase : RoomDatabase() {
                     // Everything here is derived monitoring history, so a
                     // downgrade may throw it away rather than refuse to open.
                     .fallbackToDestructiveMigrationOnDowngrade()
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }

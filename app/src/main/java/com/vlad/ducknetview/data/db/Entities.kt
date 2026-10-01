@@ -55,3 +55,30 @@ data class HostSeenEntity(
     val firstSeen: Long,
     val lastSeen: Long,
 )
+
+/**
+ * A name the device asked for, with how often and when.
+ *
+ * The identity is (name, uid) rather than the name alone: two apps reaching the
+ * same CDN are two facts, and collapsing them would lose the only attribution
+ * this table has. `addresses` uses the shared [Codec] list encoding: it is a
+ * short set read back whole and never queried into, so a join table would cost
+ * a migration and buy nothing.
+ */
+@Entity(
+    tableName = "domains",
+    indices = [
+        Index(value = ["name", "uid"], unique = true),
+        Index("lastSeen"),
+    ],
+)
+data class DomainEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val name: String,
+    val uid: Int,
+    val source: String,
+    val lookups: Int,
+    val firstSeen: Long,
+    val lastSeen: Long,
+    val addresses: String,
+)

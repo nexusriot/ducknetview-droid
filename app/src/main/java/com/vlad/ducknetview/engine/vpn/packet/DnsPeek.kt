@@ -10,32 +10,46 @@ object DnsPeek {
 
     data class Answer(val name: String, val ip: String)
 
-    fun parseAnswers(payload: ByteArray): List<Answer> {
-        if (payload.size < 12) return emptyList()
+    /**
+     * One answered question: the name the device asked for and the addresses it
+     * was given. The question matters as much as the answers — a CNAME chain
+     * answers under the final name, and what the user recognises is the one
+     * their app asked about.
+     */
+    data class Observation(val question: String, val answers: List<Answer>) {
+        val addresses: List<String> get() = answers.map { it.ip }
+    }
+
+    fun parseAnswers(payload: ByteArray): List<Answer> = parse(payload)?.answers ?: emptyList()
+
+    fun parse(payload: ByteArray): Observation? {
+        if (payload.size < 12) return null
         val flags = Packets.u16(payload, 2)
-        if (flags and 0x8000 == 0) return emptyList() // question, not a response
-        if (flags and 0x000F != 0) return emptyList() // rcode != NOERROR
+        if (flags and 0x8000 == 0) return null // question, not a response
+        if (flags and 0x000F != 0) return null // rcode != NOERROR
 
         val qdCount = Packets.u16(payload, 4)
         val anCount = Packets.u16(payload, 6)
-        if (anCount == 0) return emptyList()
+        if (anCount == 0) return null
 
         var offset = 12
+        var question = ""
         repeat(qdCount) {
-            val skipped = skipName(payload, offset) ?: return emptyList()
+            if (question.isEmpty()) question = readName(payload, offset, 0).orEmpty()
+            val skipped = skipName(payload, offset) ?: return null
             offset = skipped + 4
-            if (offset > payload.size) return emptyList()
+            if (offset > payload.size) return null
         }
 
         val out = ArrayList<Answer>(anCount)
         repeat(anCount) {
-            val nameEnd = skipName(payload, offset) ?: return out
-            if (nameEnd + 10 > payload.size) return out
+            val nameEnd = skipName(payload, offset) ?: return Observation(question, out)
+            if (nameEnd + 10 > payload.size) return Observation(question, out)
             val name = readName(payload, offset, 0) ?: ""
             val type = Packets.u16(payload, nameEnd)
             val rdLength = Packets.u16(payload, nameEnd + 8)
             val rdOffset = nameEnd + 10
-            if (rdOffset + rdLength > payload.size) return out
+            if (rdOffset + rdLength > payload.size) return Observation(question, out)
             when {
                 type == TYPE_A && rdLength == 4 ->
                     out += Answer(name, Packets.ipv4ToString(payload.copyOfRange(rdOffset, rdOffset + 4)))
@@ -44,7 +58,7 @@ object DnsPeek {
             }
             offset = rdOffset + rdLength
         }
-        return out
+        return Observation(question, out)
     }
 
     /** Returns the offset just past the name, following no pointers. */

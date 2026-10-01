@@ -6,6 +6,7 @@ import com.vlad.ducknetview.domain.model.Capabilities
 import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.ConnState
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
@@ -35,6 +36,7 @@ fun screenState(
     groups: List<HostGroup> = emptyList(),
     apps: List<AppRow> = emptyList(),
     services: List<ServiceRow> = emptyList(),
+    domains: List<DomainRow> = emptyList(),
     events: List<Event> = emptyList(),
     caps: Capabilities = Capabilities.VPN,
     settings: AppSettings = AppSettings(),
@@ -51,6 +53,7 @@ fun screenState(
     matchCursor: Int = -1,
     usage: List<DailyUsage> = emptyList(),
     usageLoading: Boolean = false,
+    privateDns: String? = null,
 ): UiState = UiState(
     snapshot = snapshot,
     caps = caps,
@@ -62,6 +65,7 @@ fun screenState(
     groups = groups,
     apps = apps,
     services = services,
+    domains = domains,
     events = events,
     eventFilter = eventFilter,
     unackedAlerts = unackedAlerts,
@@ -73,6 +77,7 @@ fun screenState(
     matchCursor = matchCursor,
     usage = usage,
     usageLoading = usageLoading,
+    privateDns = privateDns,
 )
 
 fun screenConn(
@@ -316,6 +321,7 @@ class RecordingActions(initial: AppSettings = AppSettings()) : UiActions {
 
     override fun setEventFilter(f: EventLevelFilter) { lastEventFilter = f; rec("setEventFilter") }
     override fun ackAlerts() = rec("ackAlerts")
+    override fun clearDomains() = rec("clearDomains")
     override fun clearEvents() = rec("clearEvents")
 
     override fun refreshExternalIp() = rec("refreshExternalIp")

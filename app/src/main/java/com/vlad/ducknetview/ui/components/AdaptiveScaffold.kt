@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.SwapVert
@@ -144,6 +145,7 @@ private fun iconFor(tab: Tab): ImageVector = when (tab) {
     Tab.SERVICES -> Icons.Filled.Dns
     Tab.APPS -> Icons.Filled.Apps
     Tab.CONNECTIONS -> Icons.Filled.SwapVert
+    Tab.DOMAINS -> Icons.Filled.Language
     Tab.ROUTES -> Icons.Filled.AltRoute
     Tab.EVENTS -> Icons.Filled.Notifications
 }

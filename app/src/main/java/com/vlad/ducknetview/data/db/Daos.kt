@@ -108,3 +108,35 @@ interface HostSeenDao {
     @Query("SELECT COUNT(*) FROM host_seen")
     suspend fun count(): Int
 }
+
+@Dao
+interface DomainDao {
+
+    @Query("SELECT * FROM domains ORDER BY lastSeen DESC, name ASC LIMIT :limit")
+    fun recent(limit: Int): Flow<List<DomainEntity>>
+
+    @Query("SELECT * FROM domains WHERE name = :name AND uid = :uid")
+    suspend fun find(name: String, uid: Int): DomainEntity?
+
+    @Upsert
+    suspend fun upsert(e: DomainEntity)
+
+    /** Same ordering `recent` renders with, so trimming never drops a visible row. */
+    @Query(
+        "DELETE FROM domains WHERE id NOT IN " +
+            "(SELECT id FROM domains ORDER BY lastSeen DESC, id DESC LIMIT :limit)"
+    )
+    suspend fun trimTo(limit: Int)
+
+    @Query("DELETE FROM domains WHERE lastSeen < :cutoff")
+    suspend fun pruneOlderThan(cutoff: Long)
+
+    @Query("DELETE FROM domains")
+    suspend fun clear()
+
+    @Query("SELECT * FROM domains ORDER BY lastSeen DESC, name ASC")
+    suspend fun allForExport(): List<DomainEntity>
+
+    @Query("SELECT COUNT(*) FROM domains")
+    suspend fun count(): Int
+}

@@ -4,6 +4,7 @@ import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnRow
+import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Capabilities
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventLevelFilter
@@ -15,13 +16,22 @@ import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.StateFilter
 import com.vlad.ducknetview.domain.usage.DailyUsage
 
-/** The seven destinations, mirroring the TUI's seven tabs. */
+/**
+ * The navigation destinations: the TUI's seven tabs, plus Domains.
+ *
+ * Domains has no counterpart in the TUI — a Linux host reads names out of its
+ * own resolver, while here they are a by-product of owning the TUN. It is a
+ * navigation destination rather than a top-bar overlay on purpose: the one
+ * screen that lived behind the top bar went unvisited by every device test
+ * until a crash in it was found by hand.
+ */
 enum class Tab(val route: String, val title: String) {
     OVERVIEW("overview", "Overview"),
     INTERFACES("interfaces", "Links"),
     SERVICES("services", "Services"),
     APPS("apps", "Apps"),
     CONNECTIONS("connections", "Conns"),
+    DOMAINS("domains", "Domains"),
     ROUTES("routes", "Routes"),
     EVENTS("events", "Events"),
     ;
@@ -70,6 +80,7 @@ data class UiState(
     val groups: List<HostGroup> = emptyList(),
     val apps: List<AppRow> = emptyList(),
     val services: List<ServiceRow> = emptyList(),
+    val domains: List<DomainRow> = emptyList(),
     val events: List<Event> = emptyList(),
     val eventFilter: EventLevelFilter = EventLevelFilter.ALL,
     val unackedAlerts: Int = 0,
@@ -77,6 +88,14 @@ data class UiState(
     val vpnRunning: Boolean = false,
     val usageAccessGranted: Boolean = false,
     val wifiPermissionGranted: Boolean = false,
+    /**
+     * The default link's Private DNS hostname, when one is configured.
+     *
+     * The Domains screen needs it to explain itself: with an encrypted resolver
+     * no DNS answer ever crosses the TUN, so an empty name table means "the
+     * lookups are encrypted", not "this device asked for nothing".
+     */
+    val privateDns: String? = null,
     val status: String? = null,
     val matchCount: Int = 0,
     /**
@@ -165,6 +184,8 @@ interface UiActions {
     fun exportCurrentTable()
     fun exportSnapshotJson()
     fun exportEvents()
+
+    fun clearDomains()
 
     fun setEventFilter(f: EventLevelFilter)
     fun ackAlerts()

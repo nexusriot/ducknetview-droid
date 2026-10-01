@@ -51,6 +51,7 @@ import com.vlad.ducknetview.ui.UiState
 import com.vlad.ducknetview.ui.components.AdaptiveScaffold
 import com.vlad.ducknetview.ui.screens.AppsScreen
 import com.vlad.ducknetview.ui.screens.ConnectionsScreen
+import com.vlad.ducknetview.ui.screens.DomainsScreen
 import com.vlad.ducknetview.ui.screens.EventsScreen
 import com.vlad.ducknetview.ui.screens.InterfacesScreen
 import com.vlad.ducknetview.ui.screens.OnboardingSheet
@@ -286,6 +287,7 @@ class MainActivity : ComponentActivity() {
             Tab.SERVICES -> ServicesScreen(state, vm, twoPane = twoPane)
             Tab.APPS -> AppsScreen(state, vm, twoPane = twoPane)
             Tab.CONNECTIONS -> ConnectionsScreen(state, vm, twoPane = twoPane)
+            Tab.DOMAINS -> DomainsScreen(state, vm, twoPane = twoPane)
             Tab.ROUTES -> RoutesScreen(state, vm, twoPane = twoPane)
             Tab.EVENTS -> EventsScreen(state, vm, twoPane = twoPane)
         }

@@ -11,11 +11,15 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.vlad.ducknetview.domain.model.DomainObservation
+import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.engine.vpn.packet.DnsPeek
+import com.vlad.ducknetview.engine.vpn.packet.Icmp
 import com.vlad.ducknetview.engine.vpn.packet.IpHeader
 import com.vlad.ducknetview.engine.vpn.packet.IpProto
 import com.vlad.ducknetview.engine.vpn.packet.PacketParser
+import com.vlad.ducknetview.engine.vpn.packet.TlsPeek
 import com.vlad.ducknetview.service.Notifications
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +53,7 @@ class DuckVpnService : VpnService() {
     private val table = FlowTable()
     private val tcpFlows = HashMap<FlowKey, TcpConnection>()
     private val udpFlows = HashMap<FlowKey, UdpConnection>()
+    private val icmpFlows = HashMap<FlowKey, IcmpConnection>()
     private val flowLock = Any()
 
     private lateinit var connectivity: ConnectivityManager
@@ -171,6 +176,7 @@ class DuckVpnService : VpnService() {
         when (ip.protocol) {
             IpProto.TCP -> dispatchTcp(buf, ip, writer, parser, now)
             IpProto.UDP -> dispatchUdp(buf, ip, writer, parser, now)
+            IpProto.ICMP, IpProto.ICMPV6 -> dispatchIcmp(buf, ip, writer, now)
         }
     }
 
@@ -199,6 +205,7 @@ class DuckVpnService : VpnService() {
                     protect = { sock -> protect(sock) },
                     scope = scope ?: return@synchronized null,
                     mtu = MTU,
+                    onSni = { name -> VpnBridge.noteSni(key.dstIp, name, flow.uid) },
                     onClosed = { k -> closeTcp(k) },
                 )
                 tcpFlows[key] = c
@@ -244,7 +251,7 @@ class DuckVpnService : VpnService() {
                     tun = writer,
                     protect = { sock -> protect(sock) },
                     scope = scope ?: return@synchronized null,
-                    onDnsPayload = { data -> notePassiveDns(data) },
+                    onDnsPayload = { data -> notePassiveDns(data, flow.uid) },
                     onClosed = { k -> closeUdp(k) },
                 )
                 if (!c.start(now)) {
@@ -258,9 +265,83 @@ class DuckVpnService : VpnService() {
         conn?.send(buf, payloadOffset, payloadLength, now)
     }
 
-    private fun notePassiveDns(payload: ByteArray) {
-        for (a in DnsPeek.parseAnswers(payload)) {
+    /**
+     * Relay an ICMP echo request.
+     *
+     * Only echo is handled. The rest of ICMP — Time Exceeded, Destination
+     * Unreachable, IPv6 neighbour discovery — arrives on a ping socket's error
+     * queue, which the public API cannot read, so those are dropped here as
+     * they always were. The difference is that ping now works through the TUN
+     * and the Conns info sheet says which half is missing.
+     *
+     * The echo identifier stands in for the port in the flow key: it is what
+     * distinguishes two ping sessions to the same host, which is exactly the
+     * job a port does for TCP and UDP.
+     */
+    private fun dispatchIcmp(buf: ByteArray, ip: IpHeader, writer: TunWriter, now: Long) {
+        val offset = ip.payloadOffset
+        val length = ip.payloadLength
+        if (!Icmp.isEchoRequest(buf, offset, length, ip.version)) return
+        val id = Icmp.id(buf, offset)
+        val key = FlowKey(Proto.ICMP, ip.srcIp, id, ip.dstIp, 0)
+
+        val conn = synchronized(flowLock) {
+            var c = icmpFlows[key]
+            if (c == null) {
+                val flow = table.open(key, ip.version, now)
+                // getConnectionOwnerUid answers for TCP and UDP only, so an
+                // echo flow carries the unknown-uid sentinel rather than a
+                // fabricated owner.
+                flow.uid = Process.INVALID_UID
+                flow.network = VpnBridge.currentNetworkLabel
+                c = IcmpConnection(
+                    flow = flow,
+                    ipVersion = ip.version,
+                    appRaw = ip.srcRaw(buf),
+                    remoteRaw = ip.dstRaw(buf),
+                    tun = writer,
+                    openSocket = { version ->
+                        PingSockets.open(version, protect = { fd -> protect(fd) })
+                    },
+                    scope = scope ?: return@synchronized null,
+                    mtu = MTU,
+                    onClosed = { k -> closeIcmp(k) },
+                )
+                if (!c.start(now)) {
+                    table.close(key, now, "", "")
+                    return@synchronized null
+                }
+                icmpFlows[key] = c
+            }
+            c
+        }
+        conn?.send(buf, offset, length, now)
+    }
+
+    /**
+     * Read answers out of a DNS response and publish them twice over: to the
+     * address-to-name cache the connection table labels rows from, and to the
+     * name store behind the Domains screen.
+     *
+     * The second one is the question, not the answers. A CNAME chain answers
+     * under the provider's name, and what a person recognises — and what their
+     * app actually asked for — is the question they typed.
+     */
+    private fun notePassiveDns(payload: ByteArray, uid: Int) {
+        val observed = DnsPeek.parse(payload) ?: return
+        for (a in observed.answers) {
             VpnBridge.noteDnsAnswer(a.ip, a.name)
+        }
+        if (observed.question.isNotEmpty()) {
+            VpnBridge.noteDomain(
+                DomainObservation(
+                    name = observed.question,
+                    uid = uid,
+                    source = NameSource.DNS,
+                    at = System.currentTimeMillis(),
+                    addresses = observed.addresses,
+                )
+            )
         }
     }
 
@@ -288,6 +369,12 @@ class DuckVpnService : VpnService() {
 
     private fun closeUdp(key: FlowKey) {
         synchronized(flowLock) { udpFlows.remove(key) }
+        val label = VpnBridge.labelFor(table.get(key)?.uid ?: -1)
+        table.close(key, System.currentTimeMillis(), label.first, label.second)
+    }
+
+    private fun closeIcmp(key: FlowKey) {
+        synchronized(flowLock) { icmpFlows.remove(key) }
         val label = VpnBridge.labelFor(table.get(key)?.uid ?: -1)
         table.close(key, System.currentTimeMillis(), label.first, label.second)
     }
@@ -323,6 +410,7 @@ class DuckVpnService : VpnService() {
                 synchronized(flowLock) {
                     udpFlows.remove(k)?.close()
                     tcpFlows.remove(k)?.abort()
+                    icmpFlows.remove(k)?.close()
                 }
                 table.close(k, now, "", "")
             }
@@ -350,14 +438,18 @@ class DuckVpnService : VpnService() {
         // ConcurrentModificationException and takes the process down.
         val tcp: List<TcpConnection>
         val udp: List<UdpConnection>
+        val icmp: List<IcmpConnection>
         synchronized(flowLock) {
             tcp = tcpFlows.values.toList()
             udp = udpFlows.values.toList()
+            icmp = icmpFlows.values.toList()
             tcpFlows.clear()
             udpFlows.clear()
+            icmpFlows.clear()
         }
         tcp.forEach { runCatching { it.close() } }
         udp.forEach { runCatching { it.close() } }
+        icmp.forEach { runCatching { it.close() } }
         runCatching { tunFd?.close() }
         tunFd = null
         pool.clear()
@@ -436,6 +528,8 @@ object VpnBridge {
 
     @Volatile var dnsSink: (String, String) -> Unit = { _, _ -> }
 
+    @Volatile var domainSink: (DomainObservation) -> Unit = { }
+
     @Volatile var notificationUpdater: (Context) -> Unit = { }
 
     fun attach(t: FlowTable) {
@@ -458,6 +552,27 @@ object VpnBridge {
     fun labelFor(uid: Int): Pair<String, String> = labelResolver(uid)
 
     fun noteDnsAnswer(ip: String, name: String) = dnsSink(ip, name)
+
+    fun noteDomain(observation: DomainObservation) = domainSink(observation)
+
+    /**
+     * A name read from a TLS ClientHello. It feeds the same address-to-name
+     * cache a DNS answer would, which is the point: with Private DNS switched
+     * on — the default on most modern Android — no DNS answer ever crosses the
+     * TUN, and this is the only name the connection table can show.
+     */
+    fun noteSni(ip: String, name: String, uid: Int) {
+        dnsSink(ip, name)
+        domainSink(
+            DomainObservation(
+                name = name,
+                uid = uid,
+                source = NameSource.SNI,
+                at = System.currentTimeMillis(),
+                addresses = listOf(ip),
+            )
+        )
+    }
 
     fun reportError(message: String) {
         _errors.value = message

@@ -42,6 +42,8 @@ internal const val EMPTY_APPS = "No apps"
 internal const val EMPTY_SERVICES_NEVER = "Never scanned"
 internal const val EMPTY_SERVICES = "No listeners found"
 internal const val EMPTY_EVENTS = "No events yet"
+internal const val EMPTY_DOMAINS = "No names seen yet"
+internal const val EMPTY_DOMAINS_NO_CAPTURE = "Capture engine is off"
 
 internal fun emptyTag(title: String): String = "empty:$title"
 

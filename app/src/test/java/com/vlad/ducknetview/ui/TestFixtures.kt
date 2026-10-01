@@ -249,6 +249,7 @@ class FakeActions : UiActions {
 
     override fun setEventFilter(f: EventLevelFilter) = record("setEventFilter", f)
     override fun ackAlerts() = record("ackAlerts")
+    override fun clearDomains() = record("clearDomains")
     override fun clearEvents() = record("clearEvents")
 
     override fun refreshExternalIp() = record("refreshExternalIp")
