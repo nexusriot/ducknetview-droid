@@ -35,7 +35,7 @@ object DnsPeek {
         var offset = 12
         var question = ""
         repeat(qdCount) {
-            if (question.isEmpty()) question = readName(payload, offset, 0).orEmpty()
+            if (question.isEmpty()) question = plausibleName(payload, offset)
             val skipped = skipName(payload, offset) ?: return null
             offset = skipped + 4
             if (offset > payload.size) return null
@@ -45,12 +45,16 @@ object DnsPeek {
         repeat(anCount) {
             val nameEnd = skipName(payload, offset) ?: return Observation(question, out)
             if (nameEnd + 10 > payload.size) return Observation(question, out)
-            val name = readName(payload, offset, 0) ?: ""
+            val name = plausibleName(payload, offset)
             val type = Packets.u16(payload, nameEnd)
             val rdLength = Packets.u16(payload, nameEnd + 8)
             val rdOffset = nameEnd + 10
             if (rdOffset + rdLength > payload.size) return Observation(question, out)
             when {
+                // An unreadable or implausible name labels nothing, and the row
+                // falls back to the bare address rather than showing whatever
+                // the responder put there.
+                name.isEmpty() -> Unit
                 type == TYPE_A && rdLength == 4 ->
                     out += Answer(name, Packets.ipv4ToString(payload.copyOfRange(rdOffset, rdOffset + 4)))
                 type == TYPE_AAAA && rdLength == 16 ->
@@ -59,6 +63,20 @@ object DnsPeek {
             offset = rdOffset + rdLength
         }
         return Observation(question, out)
+    }
+
+    /**
+     * The name at [start], or "" when there is none this app will show.
+     *
+     * The bytes are whatever answered the lookup, so the result is held to the
+     * same rule as a name read from a TLS handshake — see [HostNames]. Before
+     * this check a response could put control characters, newlines and, through
+     * compression-pointer expansion, multi-kilobyte strings straight into the
+     * Domains screen, the Room store and the CSV export.
+     */
+    private fun plausibleName(buf: ByteArray, start: Int): String {
+        val name = readName(buf, start, 0) ?: return ""
+        return if (HostNames.isPlausible(name)) name else ""
     }
 
     /** Returns the offset just past the name, following no pointers. */
@@ -92,12 +110,17 @@ object DnsPeek {
                     val rest = readName(buf, ptr, depth + 1) ?: return null
                     if (sb.isNotEmpty() && rest.isNotEmpty()) sb.append('.')
                     sb.append(rest)
-                    return sb.toString()
+                    return if (sb.length > HostNames.MAX_LENGTH) null else sb.toString()
                 }
                 else -> {
                     if (i + 1 + len > buf.size) return null
                     if (sb.isNotEmpty()) sb.append('.')
                     sb.append(String(buf, i + 1, len, Charsets.US_ASCII))
+                    // Give up as soon as the name cannot be a legal one rather
+                    // than building the whole of it to throw away: compression
+                    // pointers let a few hundred bytes describe tens of
+                    // kilobytes.
+                    if (sb.length > HostNames.MAX_LENGTH) return null
                     i += len + 1
                 }
             }

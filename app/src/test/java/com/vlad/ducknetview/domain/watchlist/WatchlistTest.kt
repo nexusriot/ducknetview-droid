@@ -2,6 +2,7 @@ package com.vlad.ducknetview.domain.watchlist
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -118,6 +119,42 @@ class WatchlistTest {
         val w = Watchlist(listOf("10.0.0.0/33", "2001:db8::/129"))
         assertEquals(listOf("10.0.0.0/33", "2001:db8::/129"), w.invalid)
         assertTrue(w.isEmpty)
+    }
+
+    /**
+     * The watchlist is a security feature, so an entry that can never match has
+     * to be able to say why. [Watchlist.invalid] already knew which entries
+     * those were; nothing could ask it what was wrong with them.
+     */
+    @Test
+    fun problemExplainsWhyAnEntryCannotBeUsed() {
+        assertTrue(Watchlist.problem("[unclosed")!!.contains("regex"))
+        assertTrue(Watchlist.problem("10.0.0.0/33")!!.contains("CIDR"))
+        assertTrue(Watchlist.problem("2001:db8::/129")!!.contains("CIDR"))
+    }
+
+    @Test
+    fun problemPassesEveryFormTheWatchlistAccepts() {
+        assertNull(Watchlist.problem("10.0.0.0/8"))
+        assertNull(Watchlist.problem("1.1.1.1"))
+        assertNull(Watchlist.problem("2001:db8::/32"))
+        assertNull(Watchlist.problem("^cdn.*\\.example\\.com$"))
+        // Blank is not an error; it is simply not an entry.
+        assertNull(Watchlist.problem("   "))
+    }
+
+    /**
+     * The two must not drift: whatever `problem` calls broken is exactly what
+     * the parse refuses to use.
+     */
+    @Test
+    fun problemAgreesWithInvalid() {
+        val entries = listOf(
+            "[unclosed", "10.0.0.0/33", "10.0.0.0/8", "1.1.1.1",
+            "2001:db8::/129", "^cdn", "a(b",
+        )
+        val w = Watchlist(entries)
+        assertEquals(entries.filter { Watchlist.problem(it) != null }, w.invalid)
     }
 
     @Test

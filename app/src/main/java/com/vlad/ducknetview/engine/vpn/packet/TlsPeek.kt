@@ -106,16 +106,10 @@ object TlsPeek {
     /**
      * A name is going straight into the UI and into stored history, so it is
      * checked rather than trusted: the bytes come off the wire from whatever
-     * the device was talking to.
+     * the device was talking to. The rule lives in [HostNames] because a DNS
+     * answer needs exactly the same treatment.
      */
-    internal fun isPlausibleHost(name: String): Boolean {
-        if (name.isEmpty() || name.length > MAX_NAME_LENGTH) return false
-        return name.all { c ->
-            c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '.' || c == '-' || c == '_'
-        }
-    }
-
-    private const val MAX_NAME_LENGTH = 253
+    internal fun isPlausibleHost(name: String): Boolean = HostNames.isPlausible(name)
 
     private class Reader(val buf: ByteArray, var position: Int, val end: Int) {
 

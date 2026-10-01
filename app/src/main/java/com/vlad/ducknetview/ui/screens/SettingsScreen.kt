@@ -33,6 +33,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.RateUnit
+import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.ui.UiActions
 import com.vlad.ducknetview.ui.UiState
 import com.vlad.ducknetview.ui.components.DuckFilterChip
@@ -179,6 +180,8 @@ fun SettingsScreen(
                     tag = "watchlist:$entry",
                     deleteTag = "watchlist:del:$entry",
                     onDelete = { actions.removeWatchlistEntry(entry) },
+                    problem = Watchlist.problem(entry),
+                    problemTag = "watchlist:problem:$entry",
                 )
             }
             AddEntryRow(
@@ -368,20 +371,37 @@ private fun TextSetting(
     }
 }
 
+/**
+ * @param problem why this entry can never match, when it cannot. It is shown
+ *   under the entry rather than suppressing it: the user wrote it on purpose,
+ *   so the fix is to say what is wrong, not to drop it silently.
+ */
 @Composable
 private fun EditableEntryRow(
     text: String,
     tag: String,
     deleteTag: String,
     onDelete: () -> Unit,
+    problem: String? = null,
+    problemTag: String? = null,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().testTag(tag),
-    ) {
-        Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        IconButton(onClick = onDelete, modifier = Modifier.testTag(deleteTag)) {
-            Icon(Icons.Default.Delete, contentDescription = "Remove $text")
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().testTag(tag),
+        ) {
+            Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            IconButton(onClick = onDelete, modifier = Modifier.testTag(deleteTag)) {
+                Icon(Icons.Default.Delete, contentDescription = "Remove $text")
+            }
+        }
+        if (problem != null) {
+            Text(
+                problem,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag(problemTag ?: "$tag:problem"),
+            )
         }
     }
 }

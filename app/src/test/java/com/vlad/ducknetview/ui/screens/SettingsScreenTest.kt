@@ -145,6 +145,25 @@ class SettingsScreenTest {
         assertEquals("1.1.1.1", actions.lastWatchlistAdd)
     }
 
+    /**
+     * A watchlist rule that can never match must say so where it is shown.
+     *
+     * Without this an entry with a typo sits in the list looking exactly like a
+     * working one, and the alert it was added for simply never fires — the
+     * silent failure the search bar already refuses to make for the very same
+     * class of mistake.
+     */
+    @Test
+    fun anUnusableWatchlistEntryIsMarkedAsSuch() {
+        show(
+            screenState(settings = AppSettings(watchlist = listOf("10.0.0.0/8", "[unclosed"))),
+            RecordingActions(),
+        )
+        rule.onNodeWithTag("watchlist:problem:[unclosed").performScrollTo().assertExists()
+        // The entry that is fine must not be decorated with a warning.
+        rule.onNodeWithTag("watchlist:problem:10.0.0.0/8").assertDoesNotExist()
+    }
+
     @Test
     fun watchlistHelpExplainsTheAcceptedForms() {
         show(screenState(), RecordingActions())

@@ -30,13 +30,17 @@ class Watchlist(entries: List<String>) {
             if (e.isEmpty()) continue
             raw += e
 
+            // One decision point: whatever [problem] calls broken is exactly
+            // what is left out of the structures below, so the explanation the
+            // user is shown can never disagree with what actually matches.
+            if (problem(e) != null) {
+                bad += e
+                continue
+            }
+
             val slash = e.lastIndexOf('/')
             if (slash > 0 && IpBytes.parse(e.substring(0, slash)) != null) {
-                // It is meant as a CIDR, so a bad prefix length is an error
-                // rather than an excuse to reinterpret it as a regex that
-                // would quietly never match.
-                val cidr = parseCidr(e)
-                if (cidr != null) nets += cidr else bad += e
+                parseCidr(e)?.let { nets += it }
                 continue
             }
 
@@ -46,11 +50,7 @@ class Watchlist(entries: List<String>) {
                 continue
             }
 
-            try {
-                regexes += Regex(e, RegexOption.IGNORE_CASE)
-            } catch (_: IllegalArgumentException) {
-                bad += e
-            }
+            regexes += Regex(e, RegexOption.IGNORE_CASE)
         }
         invalid = bad
     }
@@ -81,6 +81,42 @@ class Watchlist(entries: List<String>) {
 
         /** Exposed for the "add this remote" action, which only accepts IPs. */
         fun isAddress(entry: String): Boolean = IpBytes.parse(entry) != null
+
+        /**
+         * Why this entry can never match, or null when it is usable.
+         *
+         * The watchlist is a security feature: an entry with a typo in it used
+         * to be stored, listed and rendered exactly like a working rule, and
+         * the alert it was added for simply never fired. [invalid] knew which
+         * entries those were but nothing could ask it *what* was wrong, so
+         * nothing told the user.
+         */
+        fun problem(entry: String): String? {
+            val e = entry.trim()
+            if (e.isEmpty()) return null
+
+            val slash = e.lastIndexOf('/')
+            if (slash > 0 && IpBytes.parse(e.substring(0, slash)) != null) {
+                // It is meant as a CIDR, so a bad prefix length is an error
+                // rather than an excuse to reinterpret it as a regex that
+                // would quietly never match.
+                return if (parseCidr(e) == null) {
+                    "not a valid CIDR: the prefix length is out of range"
+                } else {
+                    null
+                }
+            }
+
+            if (IpBytes.parseNormalized(e) != null) return null
+
+            return try {
+                Regex(e, RegexOption.IGNORE_CASE)
+                null
+            } catch (ex: IllegalArgumentException) {
+                "invalid regex: " + (ex.message?.lineSequence()?.firstOrNull()?.trim()
+                    ?: "it cannot be compiled")
+            }
+        }
 
         internal fun parseCidr(entry: String): Cidr? {
             val slash = entry.lastIndexOf('/')
