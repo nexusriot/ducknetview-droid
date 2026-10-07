@@ -75,9 +75,9 @@ fun EventsScreen(
         ) {
             Text(
                 text = if (state.unackedAlerts > 0) {
-                    "${state.events.size} events · ${state.unackedAlerts} unacked"
+                    countLabel(state.events.size, "event") + " · ${state.unackedAlerts} unacked"
                 } else {
-                    "${state.events.size} events"
+                    countLabel(state.events.size, "event")
                 },
                 style = MaterialTheme.typography.labelMedium,
                 color = if (state.unackedAlerts > 0) DuckColors.Alert else MaterialTheme.colorScheme.onSurfaceVariant,

@@ -1,6 +1,7 @@
 package com.vlad.ducknetview.domain.filter
 
 import com.vlad.ducknetview.domain.model.AppRow
+import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.DomainRow
@@ -19,16 +20,36 @@ object Filters {
 
     fun conns(rows: List<ConnRow>, f: QuickFilters, userAppUids: Set<Int>): List<ConnRow> {
         if (!f.any) return rows
-        return rows.filter { r ->
-            protoOk(r.proto, f.proto) &&
-                versionOk(r.remoteAddr, f.ipVersion) &&
-                stateOk(r.state, f.state) &&
-                (!f.publicOnly || r.scope == Scope.PUBLIC) &&
-                (!f.userAppsOnly || isUserApp(r.uid, userAppUids)) &&
-                (f.network == null || r.network == f.network) &&
-                (f.uid == null || r.uid == f.uid)
-        }
+        return rows.filter { connMatches(it, f, userAppUids) }
     }
+
+    /**
+     * The closed-connection history is the same rows after the socket is gone,
+     * so it takes the same chips. It used to go on screen straight off the
+     * snapshot, which left every chip, the search box and the sort header inert
+     * over it while the counter above reported matches in the live table.
+     *
+     * The state chips are skipped deliberately: every row here is closed, so
+     * "established" or "active" over this table could only ever empty it.
+     */
+    fun closed(rows: List<ClosedConn>, f: QuickFilters, userAppUids: Set<Int>): List<ClosedConn> {
+        if (!f.any) return rows
+        return rows.filter { connMatches(it.row, f, userAppUids, applyState = false) }
+    }
+
+    fun connMatches(
+        r: ConnRow,
+        f: QuickFilters,
+        userAppUids: Set<Int>,
+        applyState: Boolean = true,
+    ): Boolean =
+        protoOk(r.proto, f.proto) &&
+            versionOk(r.remoteAddr, f.ipVersion) &&
+            (!applyState || stateOk(r.state, f.state)) &&
+            (!f.publicOnly || r.scope == Scope.PUBLIC) &&
+            (!f.userAppsOnly || isUserApp(r.uid, userAppUids)) &&
+            (f.network == null || r.network == f.network) &&
+            (f.uid == null || r.uid == f.uid)
 
     fun apps(rows: List<AppRow>, f: QuickFilters, userAppUids: Set<Int>): List<AppRow> {
         if (!f.any) return rows

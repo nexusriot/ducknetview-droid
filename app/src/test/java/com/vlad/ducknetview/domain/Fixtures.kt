@@ -73,6 +73,8 @@ object Fixtures {
         sessionTx: Long = 0L,
         todayRx: Long = 0L,
         todayTx: Long = 0L,
+        blocked: Boolean = false,
+        excludedFromVpn: Boolean = false,
     ): AppRow = AppRow(
         uid = uid,
         packageName = packageName,
@@ -85,6 +87,8 @@ object Fixtures {
         sessionTx = sessionTx,
         todayRx = todayRx,
         todayTx = todayTx,
+        blocked = blocked,
+        excludedFromVpn = excludedFromVpn,
     )
 
     fun service(
@@ -94,14 +98,19 @@ object Fixtures {
         service: String = "http-alt",
         appLabel: String = "Server",
         uid: Int = 10002,
+        exposure: Exposure = IpScope.exposureOf(bindAddr),
+        firstSeen: Long = 0L,
+        lastSeen: Long = 0L,
     ): ServiceRow = ServiceRow(
         proto = proto,
         bindAddr = bindAddr,
         port = port,
         service = service,
-        exposure = IpScope.exposureOf(bindAddr),
+        exposure = exposure,
         uid = uid,
         appLabel = appLabel,
+        firstSeen = firstSeen,
+        lastSeen = lastSeen,
     )
 
     fun network(

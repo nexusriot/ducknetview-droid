@@ -19,11 +19,19 @@ class AppCatalogTest {
 
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
 
+    /**
+     * INVALID_UID is the platform declining to name an owner, which it does for
+     * every ICMP echo and for any flow whose socket closed before
+     * getConnectionOwnerUid was asked. The label used to interpolate the
+     * sentinel, so the app column of the connection table, the detail pane and
+     * the CSV export all printed a literal "uid -1" as though -1 were a user.
+     */
     @Test
-    fun `an invalid uid gets a placeholder label instead of throwing`() {
+    fun `an invalid uid is named unknown rather than printing the sentinel`() {
         val row = AppCatalog(context).row(Process.INVALID_UID)
         assertEquals(Process.INVALID_UID, row.uid)
-        assertEquals("uid ${Process.INVALID_UID}", row.label)
+        assertEquals(AppCatalog.UNKNOWN_OWNER, row.label)
+        assertFalse("the -1 sentinel reached the label", row.label.contains("-1"))
         assertEquals("", row.packageName)
     }
 

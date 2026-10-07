@@ -174,8 +174,16 @@ class AppCatalog(context: Context) {
 
     companion object {
 
+        /** What a row with no resolvable owner is called. */
+        const val UNKNOWN_OWNER = "unknown"
+
         internal fun fallbackLabel(uid: Int): String = when (uid) {
-            Process.INVALID_UID -> "uid ${Process.INVALID_UID}"
+            // INVALID_UID is the platform saying "I will not tell you", which
+            // getConnectionOwnerUid does for every ICMP echo and for a flow
+            // whose socket closed before it was asked. Printing the sentinel
+            // put a literal "uid -1" in the app column of the table, in the
+            // detail pane and in the CSV export, as if -1 were a user.
+            Process.INVALID_UID -> UNKNOWN_OWNER
             ROOT_UID -> "root"
             SYSTEM_UID -> "system"
             else -> "uid $uid"

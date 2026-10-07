@@ -44,6 +44,7 @@ import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.IpVersionFilter
 import com.vlad.ducknetview.domain.model.ProtoFilter
 import com.vlad.ducknetview.domain.model.StateFilter
+import com.vlad.ducknetview.domain.model.Transport
 import com.vlad.ducknetview.domain.model.ThroughputMode
 import com.vlad.ducknetview.domain.rates.Units
 import com.vlad.ducknetview.ui.HostGroup
@@ -59,7 +60,7 @@ import com.vlad.ducknetview.ui.components.SortChips
 import com.vlad.ducknetview.ui.components.TableSearchBar
 import com.vlad.ducknetview.ui.theme.DuckColors
 
-private val CONN_SORT_COLUMNS = listOf("app", "proto", "remote", "state", "rx", "tx", "rtt", "age")
+internal val CONN_SORT_COLUMNS = listOf("app", "proto", "remote", "state", "rx", "tx", "rtt", "age")
 
 @Composable
 fun ConnectionsScreen(
@@ -90,9 +91,21 @@ fun ConnectionsScreen(
 
     val now = state.snapshot.atMillis
     val settings = state.settings
-    // The sheet re-reads the live row each tick so it keeps updating, as the TUI overlay does.
-    val liveConn = selectedConn?.let { sel -> state.conns.firstOrNull { it.key == sel.key } ?: sel }
-    val liveGroup = selectedGroup?.let { sel -> state.groups.firstOrNull { it.host == sel.host } ?: sel }
+    // The sheet re-reads the live row each tick so it keeps updating, as the TUI
+    // overlay does. It must not fall back to the copy taken at selection time:
+    // that pane went on reporting "established" for a connection that had
+    // already retired, with an age that kept climbing and byte totals frozen at
+    // whatever the last tick saw. When the flow is gone, show the closed record
+    // — which carries its true final state and lifetime — and show nothing at
+    // all when a chip or the search has merely hidden the row.
+    val selected = selectedConn
+    val liveConn = selected?.let { sel -> state.conns.firstOrNull { it.key == sel.key } }
+    val retiredConn = if (selected != null && liveConn == null) {
+        state.snapshot.closedConns.firstOrNull { it.row.key == selected.key }
+    } else {
+        null
+    }
+    val liveGroup = selectedGroup?.let { sel -> state.groups.firstOrNull { it.host == sel.host } }
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(
@@ -107,9 +120,9 @@ fun ConnectionsScreen(
             Spacer(Modifier.width(12.dp))
             Text(
                 text = when {
-                    settings.groupByHost -> "${state.groups.size} hosts"
-                    settings.showClosed -> "${state.closed.size} closed"
-                    else -> "${state.conns.size} rows"
+                    settings.groupByHost -> countLabel(state.groups.size, "host")
+                    settings.showClosed -> countLabel(state.closed.size, "closed", "closed")
+                    else -> countLabel(state.conns.size, "row")
                 },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -179,7 +192,7 @@ fun ConnectionsScreen(
                         .verticalScroll(rememberScrollState())
                         .padding(8.dp),
                 ) {
-                    val closedPane = selectedClosed
+                    val closedPane = selectedClosed ?: retiredConn
                     val lines = when {
                         liveConn != null -> connDetailLines(liveConn, state)
                         liveGroup != null -> groupDetailLines(liveGroup, state)
@@ -247,14 +260,18 @@ fun ConnectionsScreen(
                 )
             }
         }
-        val closed = selectedClosed
+        val closed = selectedClosed ?: retiredConn
         if (closed != null) {
             Box(Modifier.testTag(TAG_DETAIL_SHEET)) {
                 DetailSheet(
                     title = closed.row.remoteDisplay(settings.revDns),
                     lines = closedDetailLines(closed, state),
                     onCopy = { actions.copyText("connection", closedTabText(closed, settings.revDns, now)) },
-                    onDismiss = { selectedClosed = null },
+                    // This sheet can be showing either a row picked from the
+                    // closed table or a live row that retired under the reader,
+                    // so dismissing it has to drop both selections or it
+                    // reopens on the next tick.
+                    onDismiss = { selectedClosed = null; selectedConn = null },
                     // No block / app-info action here: the socket is gone and its uid may
                     // already have been recycled by the platform, so acting on it could hit
                     // an unrelated app.
@@ -315,14 +332,21 @@ private fun ConnFilterChips(state: UiState, actions: UiActions) {
         DuckFilterChip("my apps", f.userAppsOnly, { actions.toggleUserAppsOnly() }, Modifier.testTag("chip:mine"))
 
         DuckFilterChip("all nets", f.network == null, { actions.setNetworkFilter(null) }, Modifier.testTag("chip:net-all"))
-        state.snapshot.networks.filter { !it.isNoise }.forEach { net ->
-            DuckFilterChip(
-                net.ifaceName,
-                f.network == net.ifaceName,
-                { actions.setNetworkFilter(if (f.network == net.ifaceName) null else net.ifaceName) },
-                Modifier.testTag("chip:net-${net.ifaceName}"),
-            )
-        }
+        // A flow is labelled with the link it actually left on, which is never
+        // a VPN interface: while capture is running the default route is this
+        // app's own TUN, and naming every flow "tun0" would say nothing. So a
+        // chip for a VPN link could only ever empty the table, which is what
+        // the "tun0" chip did.
+        state.snapshot.networks
+            .filter { !it.isNoise && it.transport != Transport.VPN }
+            .forEach { net ->
+                DuckFilterChip(
+                    net.ifaceName,
+                    f.network == net.ifaceName,
+                    { actions.setNetworkFilter(if (f.network == net.ifaceName) null else net.ifaceName) },
+                    Modifier.testTag("chip:net-${net.ifaceName}"),
+                )
+            }
 
         if (f.uid != null) {
             DuckFilterChip(
@@ -481,7 +505,7 @@ private fun GroupTable(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
-                    Text("${g.connCount} conns", style = MaterialTheme.typography.labelSmall)
+                    Text(countLabel(g.connCount, "conn"), style = MaterialTheme.typography.labelSmall)
                 }
                 Text(
                     rxTxText(g.rxBps, g.txBps, g.rxTotal, g.txTotal, s.throughputMode, s.rateUnit),
@@ -516,7 +540,15 @@ private fun ClosedTable(
     if (state.closed.isEmpty()) {
         EmptyState(
             title = EMPTY_CLOSED,
-            message = "Closed connections are remembered for this session only, newest first.",
+            // The search and the chips now reach this table, so an empty one
+            // has two causes and saying the wrong one sends the reader looking
+            // in the wrong place.
+            message = if (state.snapshot.closedConns.isEmpty()) {
+                "No connection has closed yet. Closed connections are remembered " +
+                    "for this session only, newest first."
+            } else {
+                "No closed connection matches the current search and filters."
+            },
             modifier = modifier.testTag(emptyTag(EMPTY_CLOSED)),
         )
         return

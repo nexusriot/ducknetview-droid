@@ -233,9 +233,18 @@ class SortersTest {
     @Test
     fun columnRegistriesAreExposedPerTable() {
         assertEquals(Sorters.CONN_COLUMNS, Sorters.columnsFor("conns"))
-        assertTrue(Sorters.CONN_COLUMNS.containsAll(listOf("rx", "tx", "rtt", "age", "scope")))
+        assertTrue(
+            Sorters.CONN_COLUMNS.containsAll(
+                // "app" is the chip the Android table renders; "process" is the
+                // TUI's name for the same column and both must stay supported.
+                listOf("rx", "tx", "rtt", "age", "scope", "process", "app"),
+            )
+        )
         assertEquals(listOf("conns", "rx", "tx", "name", "today"), Sorters.APP_COLUMNS)
-        assertEquals(listOf("proto", "port", "service", "exposure"), Sorters.SERVICE_COLUMNS)
+        assertEquals(
+            listOf("proto", "port", "service", "exposure", "seen"),
+            Sorters.SERVICE_COLUMNS,
+        )
         assertEquals(listOf("closedAt", "lifetime", "rx", "tx"), Sorters.CLOSED_COLUMNS)
         assertEquals(listOf("conns", "host", "bytes"), Sorters.GROUP_COLUMNS)
         assertTrue(Sorters.columnsFor("nope").isEmpty())

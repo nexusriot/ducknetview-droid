@@ -20,10 +20,11 @@ import com.vlad.ducknetview.ui.HostGroup
 object Sorters {
 
     val CONN_COLUMNS = listOf(
-        "pid", "proto", "state", "local", "remote", "process", "scope", "age", "rx", "tx", "rtt",
+        "pid", "proto", "state", "local", "remote", "process", "app", "scope",
+        "age", "rx", "tx", "rtt",
     )
     val APP_COLUMNS = listOf("conns", "rx", "tx", "name", "today")
-    val SERVICE_COLUMNS = listOf("proto", "port", "service", "exposure")
+    val SERVICE_COLUMNS = listOf("proto", "port", "service", "exposure", "seen")
     val DOMAIN_COLUMNS = listOf("name", "lookups", "seen", "app")
     val CLOSED_COLUMNS = listOf("closedAt", "lifetime", "rx", "tx")
     val GROUP_COLUMNS = listOf("conns", "host", "bytes")
@@ -49,15 +50,30 @@ object Sorters {
         Scope.LOOPBACK -> 3
     }
 
-    fun conns(col: String, desc: Boolean, mode: ThroughputMode, now: Long): Comparator<ConnRow> {
-        val tie = Comparator<ConnRow> { a, b -> a.key.compareTo(b.key) }
+    fun conns(col: String, desc: Boolean, mode: ThroughputMode, now: Long): Comparator<ConnRow> =
+        ordered(connPrimary(col, mode, now), desc, Comparator { a, b -> a.key.compareTo(b.key) })
+
+    /**
+     * The column comparator alone, with no tie-break appended, so another table
+     * can reuse it under its own tie-break. Reversing a comparator that already
+     * carried one would reverse the tie-break too, and equal rows would swap
+     * places between ascending and descending.
+     *
+     * Null for a column this table does not sort by.
+     */
+    fun connPrimary(col: String, mode: ThroughputMode, now: Long): Comparator<ConnRow>? {
         val primary: Comparator<ConnRow>? = when (col) {
             "pid" -> Comparator { a, b -> a.uid.compareTo(b.uid) }
             "proto" -> Comparator { a, b -> a.proto.name.compareTo(b.proto.name) }
             "state" -> Comparator { a, b -> a.state.name.compareTo(b.state.name) }
             "local" -> Comparator { a, b -> a.localPort.compareTo(b.localPort) }
             "remote" -> Comparator { a, b -> text(a.remote, b.remote) }
-            "process" -> Comparator { a, b -> text(a.appLabel, b.appLabel) }
+            // The TUI calls this column "process"; the Android table shows the
+            // owning app and labels its chip "app". Only "process" was handled,
+            // so tapping the chip the screen actually renders fell through to
+            // the tie-break and sorted by flow key — a sort control that did
+            // nothing, with an arrow above it claiming it had.
+            "process", "app" -> Comparator { a, b -> text(a.appLabel, b.appLabel) }
             "scope" -> Comparator { a, b -> scopeRank(a.scope).compareTo(scopeRank(b.scope)) }
             "age" -> Comparator { a, b -> a.ageMillis(now).compareTo(b.ageMillis(now)) }
             "rx" -> Comparator { a, b -> connBytes(a, mode, rx = true).compareTo(connBytes(b, mode, rx = true)) }
@@ -65,7 +81,7 @@ object Sorters {
             "rtt" -> Comparator { a, b -> rtt(a.rttMillis).compareTo(rtt(b.rttMillis)) }
             else -> null
         }
-        return ordered(primary, desc, tie)
+        return primary
     }
 
     fun domains(col: String, desc: Boolean): Comparator<DomainRow> {
@@ -100,6 +116,9 @@ object Sorters {
             "port" -> Comparator { a, b -> a.port.compareTo(b.port) }
             "service" -> Comparator { a, b -> text(a.service, b.service) }
             "exposure" -> Comparator { a, b -> a.exposure.ordinal.compareTo(b.exposure.ordinal) }
+            // The screen offers a "seen" chip and prints "first … last …" on
+            // every row, but no comparator answered to it.
+            "seen" -> Comparator { a, b -> a.lastSeen.compareTo(b.lastSeen) }
             else -> null
         }
         return ordered(primary, desc, tie)
@@ -117,6 +136,29 @@ object Sorters {
             "rx" -> Comparator { a, b -> a.finalRx.compareTo(b.finalRx) }
             "tx" -> Comparator { a, b -> a.finalTx.compareTo(b.finalTx) }
             else -> null
+        }
+        return ordered(primary, desc, tie)
+    }
+
+    /**
+     * The closed table is shown under the live table's own sort chips, so it
+     * has to answer to the live table's column names rather than to
+     * [CLOSED_COLUMNS].
+     *
+     * Two of them mean something different once the socket is gone: bytes are
+     * the flow's final totals rather than a rate, and "age" is its lifetime —
+     * time since the last packet would keep growing for a connection that has
+     * already ended, so it would order the table by nothing but close time.
+     */
+    fun closedByConnColumn(col: String, desc: Boolean, mode: ThroughputMode): Comparator<ClosedConn> {
+        val tie = Comparator<ClosedConn> { a, b -> a.row.key.compareTo(b.row.key) }
+        val primary: Comparator<ClosedConn>? = when (col) {
+            "rx" -> Comparator { a, b -> a.finalRx.compareTo(b.finalRx) }
+            "tx" -> Comparator { a, b -> a.finalTx.compareTo(b.finalTx) }
+            "age", "lifetime" -> Comparator { a, b -> a.lifetimeMillis.compareTo(b.lifetimeMillis) }
+            "closedAt" -> Comparator { a, b -> a.closedAt.compareTo(b.closedAt) }
+            else -> connPrimary(col, mode, now = 0L)
+                ?.let { byRow -> Comparator { a, b -> byRow.compare(a.row, b.row) } }
         }
         return ordered(primary, desc, tie)
     }

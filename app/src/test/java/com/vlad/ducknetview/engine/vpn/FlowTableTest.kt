@@ -40,6 +40,23 @@ class FlowTableTest {
         assertEquals(ConnState.CLOSED, closed[0].row.state)
     }
 
+    /**
+     * A flow refused because its app is blocked has to arrive in history
+     * saying so. The Conns sheet toggles with `!row.blocked`, so a blocked row
+     * that reports `false` turns the unblock control into a second block.
+     */
+    @Test
+    fun closePreservesTheBlockedMarkOnTheRetiredRow() {
+        val t = FlowTable()
+        val f = t.open(key(1002, Proto.UDP), 4, 100L)
+        f.blocked = true
+        t.close(key(1002, Proto.UDP), 200L, "Chrome", "com.android.chrome")
+
+        val closed = t.closedSnapshot().single()
+        assertTrue("the blocked mark was dropped on close", closed.row.blocked)
+        assertEquals("Chrome", closed.row.appLabel)
+    }
+
     @Test
     fun closedHistoryIsBoundedAndKeepsTheNewest() {
         val t = FlowTable(closedLimit = 3)

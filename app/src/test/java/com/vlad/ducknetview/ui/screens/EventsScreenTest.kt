@@ -112,7 +112,8 @@ class EventsScreenTest {
     @Test
     fun unackedCountIsShownInTheHeader() {
         show(screenState(events = listOf(screenEvent()), unackedAlerts = 2))
-        rule.onNodeWithText("1 events · 2 unacked").assertExists()
+        // Singular for one row: the counter used to read "1 events".
+        rule.onNodeWithText("1 event · 2 unacked").assertExists()
     }
 
     @Test

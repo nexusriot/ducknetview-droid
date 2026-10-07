@@ -133,6 +133,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Sorters.conns(settings.connsSortCol, settings.connsSortDesc, settings.throughputMode, snap.atMillis)
         )
 
+        // The closed-connection history went on screen straight off the
+        // snapshot, so the filter chips, the sort header and the search box
+        // were all inert over it: searching an app's name above a table full
+        // of that app's rows answered "0 matches". It is the same shape of row
+        // as the live table, so it gets the same three stages.
+        val closedFiltered = Filters.closed(snap.closedConns, filters, userUids)
+        val closedSearched = Search.apply(
+            closedFiltered, matcher, settings.searchMode,
+        ) { c ->
+            listOf(
+                c.row.local, c.row.remote, c.row.resolvedHost.orEmpty(), c.row.appLabel,
+                c.row.service, c.row.proto.toString(),
+            )
+        }
+        val closedRows = closedSearched.items.sortedWith(
+            Sorters.closedByConnColumn(settings.connsSortCol, settings.connsSortDesc, settings.throughputMode)
+        )
+
         val appsFiltered = Filters.apps(snap.apps, filters, userUids)
         val appsSearched = Search.apply(appsFiltered, matcher, settings.searchMode) { a ->
             listOf(a.label, a.packageName, a.uid.toString())
@@ -190,7 +208,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         // above a table showing none of them and made the "n / m" denominator
         // count rows n/N could never walk to.
         val visibleSearch: SearchResult<*>? = when (tabFlow.value) {
-            Tab.CONNECTIONS -> connsSearched
+            // Which of the three the Conns tab is showing is a settings choice,
+            // and the counter has to describe the table actually on screen.
+            Tab.CONNECTIONS -> if (settings.showClosed) closedSearched else connsSearched
             Tab.APPS -> appsSearched
             Tab.SERVICES -> servicesSearched
             Tab.DOMAINS -> domainsSearched
@@ -207,7 +227,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             filters = filters,
             search = search.copy(error = compiled.error, mode = settings.searchMode),
             conns = conns,
-            closed = snap.closedConns,
+            closed = closedRows,
             groups = Grouping.of(conns, settings.revDns),
             apps = apps,
             services = services,

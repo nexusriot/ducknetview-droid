@@ -390,6 +390,12 @@ private fun domainsInfo(capturing: Boolean): List<Pair<String, String>> = if (!c
             "Android — no DNS answer is readable at all, and every name here comes " +
             "from SNI. An empty DNS column on such a network is the encryption " +
             "working, not a gap in this table.",
+        "QUIC is the real blind spot" to
+            "A browser reaches most sites over HTTP/3, which is QUIC on UDP 443, " +
+            "and QUIC carries its ClientHello inside an encrypted packet. No name " +
+            "is readable there, so a page load can leave a udp/quic row in the " +
+            "connection table and nothing at all on this screen. Apps still using " +
+            "TCP TLS are the ones that fill it.",
         "This is not TLS interception" to
             "SNI is sent unencrypted before any key exchange. Nothing is decrypted, " +
             "no certificate is substituted and no key is touched; the handshake is " +

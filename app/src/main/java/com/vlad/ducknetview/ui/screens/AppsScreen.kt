@@ -52,7 +52,7 @@ import com.vlad.ducknetview.ui.components.SortChips
 import com.vlad.ducknetview.ui.components.TableSearchBar
 import com.vlad.ducknetview.ui.theme.DuckColors
 
-private val APP_SORT_COLUMNS = listOf("name", "conns", "rx", "tx", "today")
+internal val APP_SORT_COLUMNS = listOf("name", "conns", "rx", "tx", "today")
 
 @Composable
 fun AppsScreen(
@@ -83,7 +83,7 @@ fun AppsScreen(
             modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp),
         ) {
             Text(
-                "${rows.size} apps",
+                countLabel(rows.size, "app"),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -301,7 +301,7 @@ private fun AppRowItem(
             // Connection counts only exist while the capture engine is running.
             if (state.caps.hasConnections) {
                 Text(
-                    "${app.connCount} conns",
+                    countLabel(app.connCount, "conn"),
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.testTag("app:conns:${app.uid}"),
                 )

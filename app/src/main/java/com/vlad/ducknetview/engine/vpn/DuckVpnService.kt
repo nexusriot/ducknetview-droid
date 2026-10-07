@@ -240,7 +240,15 @@ class DuckVpnService : VpnService() {
                 flow.uid = lookupUid(IpProto.UDP, ip.srcIp, udp.srcPort, ip.dstIp, udp.dstPort)
                 flow.network = VpnBridge.currentNetworkLabel
                 if (VpnBridge.isBlocked(flow.uid)) {
-                    table.close(key, now, "", "")
+                    // The TCP side refuses a blocked flow through reject(),
+                    // which marks it and resolves its app label. This path used
+                    // to close the flow bare: the row landed in closed history
+                    // as "uid 10135" with blocked = false, so it named no app
+                    // and the Conns screen's own toggle — which sends
+                    // !row.blocked — would re-block rather than unblock it.
+                    // With QUIC this is the common case, not the rare one.
+                    flow.blocked = true
+                    retire(key, now)
                     return@synchronized null
                 }
                 c = UdpConnection(
@@ -255,7 +263,7 @@ class DuckVpnService : VpnService() {
                     onClosed = { k -> closeUdp(k) },
                 )
                 if (!c.start(now)) {
-                    table.close(key, now, "", "")
+                    retire(key, now)
                     return@synchronized null
                 }
                 udpFlows[key] = c
@@ -308,7 +316,7 @@ class DuckVpnService : VpnService() {
                     onClosed = { k -> closeIcmp(k) },
                 )
                 if (!c.start(now)) {
-                    table.close(key, now, "", "")
+                    retire(key, now)
                     return@synchronized null
                 }
                 icmpFlows[key] = c
@@ -361,22 +369,31 @@ class DuckVpnService : VpnService() {
             Process.INVALID_UID
         }
 
+    /**
+     * Move a flow into closed history under its app's name. Every path that
+     * ends a flow goes through here: the three `close*` callbacks, a connection
+     * whose upstream socket would not open, one refused because its app is
+     * blocked, and the idle sweep. Four of those used to close the flow bare,
+     * and the rows they left behind named no app at all.
+     */
+    private fun retire(key: FlowKey, now: Long) {
+        val label = VpnBridge.labelFor(table.get(key)?.uid ?: -1)
+        table.close(key, now, label.first, label.second)
+    }
+
     private fun closeTcp(key: FlowKey) {
         synchronized(flowLock) { tcpFlows.remove(key) }
-        val label = VpnBridge.labelFor(table.get(key)?.uid ?: -1)
-        table.close(key, System.currentTimeMillis(), label.first, label.second)
+        retire(key, System.currentTimeMillis())
     }
 
     private fun closeUdp(key: FlowKey) {
         synchronized(flowLock) { udpFlows.remove(key) }
-        val label = VpnBridge.labelFor(table.get(key)?.uid ?: -1)
-        table.close(key, System.currentTimeMillis(), label.first, label.second)
+        retire(key, System.currentTimeMillis())
     }
 
     private fun closeIcmp(key: FlowKey) {
         synchronized(flowLock) { icmpFlows.remove(key) }
-        val label = VpnBridge.labelFor(table.get(key)?.uid ?: -1)
-        table.close(key, System.currentTimeMillis(), label.first, label.second)
+        retire(key, System.currentTimeMillis())
     }
 
     /**
@@ -412,7 +429,12 @@ class DuckVpnService : VpnService() {
                     tcpFlows.remove(k)?.abort()
                     icmpFlows.remove(k)?.close()
                 }
-                table.close(k, now, "", "")
+                // For a flow that had a connection object this is a no-op:
+                // close() above already fired onClosed, which retired it with a
+                // label. It still matters for one that never got that far — a
+                // flow whose upstream socket failed to open, or one refused
+                // because its app is blocked.
+                retire(k, now)
             }
             VpnBridge.updateNotification(this)
         }

@@ -21,6 +21,7 @@ import com.vlad.ducknetview.domain.model.SearchMode
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.ThroughputMode
 import com.vlad.ducknetview.domain.rates.Units
+import com.vlad.ducknetview.engine.api.AppCatalog
 import com.vlad.ducknetview.domain.search.Search
 import com.vlad.ducknetview.ui.UiState
 import com.vlad.ducknetview.ui.theme.DuckColors
@@ -169,6 +170,10 @@ private fun sameDay(a: Long, b: Long): Boolean {
 internal fun appDisplayName(label: String, packageName: String, uid: Int): String = when {
     label.isNotEmpty() -> label
     packageName.isNotEmpty() -> packageName
+    // A row that reached the UI with no label at all and the platform's
+    // "no owner" sentinel for a uid must not render it as though -1 named
+    // something.
+    uid < 0 -> AppCatalog.UNKNOWN_OWNER
     else -> "uid $uid"
 }
 
@@ -231,3 +236,14 @@ internal fun eventTabText(e: Event, now: Long): String = listOf(
     e.subject,
     e.detail,
 ).joinToString("\t")
+
+/**
+ * "1 row", "2 rows" — the row counters above the tables said "1 apps" and
+ * "1 rows" while the match counter beside them already read "1 match", so the
+ * same header contradicted itself on any one-row table.
+ *
+ * [plural] defaults to the English `-s`; pass it for a word that does not take
+ * one.
+ */
+internal fun countLabel(n: Int, singular: String, plural: String = singular + "s"): String =
+    "$n ${if (n == 1) singular else plural}"

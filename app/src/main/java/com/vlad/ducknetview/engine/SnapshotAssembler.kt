@@ -98,7 +98,7 @@ class SnapshotAssembler(
         val mode = if (flows != null) EngineMode.VPN else EngineMode.API
 
         val conns = if (flows != null) buildConns(flows, now, settings, watchlist) else emptyList()
-        val apps = buildApps(conns, api, flows != null)
+        val apps = buildApps(conns, api, flows != null, settings)
 
         // The grand session total integrates the same device counters that feed
         // the "Now" and "Session peak" rows beside it, so it is available in API
@@ -206,11 +206,19 @@ class SnapshotAssembler(
         conns: List<ConnRow>,
         api: ApiSample,
         vpnMode: Boolean,
+        settings: AppSettings,
     ): List<AppRow> {
         val byUid = HashMap<Int, MutableList<ConnRow>>()
         for (c in conns) byUid.getOrPut(c.uid) { ArrayList() } += c
 
-        val uids = if (vpnMode) byUid.keys.toSet() else api.perUid.keys
+        // A blocked app has no live flows by construction — TCP is refused with
+        // an RST and UDP is dropped before a socket is opened — so listing only
+        // the uids with flows meant a blocked app vanished from this screen
+        // entirely. Its row is the only place to unblock it, and the "blocked"
+        // chip is supposed to list exactly these, so they are kept whether they
+        // carried a packet this tick or not.
+        val uids = (if (vpnMode) byUid.keys.toSet() else api.perUid.keys) +
+            settings.blockedUids + settings.excludedUids
         return uids.map { uid ->
             val rows = byUid[uid].orEmpty()
             val base = catalog.row(uid)
@@ -230,6 +238,14 @@ class SnapshotAssembler(
                 todayRx = today?.first ?: 0L,
                 todayTx = today?.second ?: 0L,
                 remoteHosts = rows.map { it.remoteAddr }.distinct().size,
+                // Both of these were left at their `false` default, which made
+                // the Apps screen's own controls lie: the detail said "Blocked:
+                // no" for a blocked app, the "blocked" chip never listed one,
+                // and because the button sends `!app.blocked` it always asked
+                // to block — so an app could be blocked from here and never
+                // unblocked again.
+                blocked = uid in settings.blockedUids,
+                excludedFromVpn = uid in settings.excludedUids,
             )
         }
     }

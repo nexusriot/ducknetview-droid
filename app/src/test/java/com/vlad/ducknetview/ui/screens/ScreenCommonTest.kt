@@ -54,6 +54,37 @@ class ScreenCommonTest {
         assertEquals("uid 10", appDisplayName("", "", 10))
     }
 
+    /**
+     * A row that arrives with no label and the platform's "no owner" sentinel
+     * must not render it as a uid. The engine labels these now, but the UI is
+     * the last place the sentinel could leak from.
+     */
+    @Test
+    fun appDisplayNameNeverPrintsANegativeUid() {
+        assertEquals("unknown", appDisplayName("", "", -1))
+        assertFalse(appDisplayName("", "", -1).contains("-1"))
+    }
+
+    /**
+     * The row counters read "1 apps" and "1 rows" beside a match counter that
+     * already said "1 match", so one header disagreed with itself.
+     */
+    @Test
+    fun countLabelAgreesWithItsOwnNumber() {
+        assertEquals("0 rows", countLabel(0, "row"))
+        assertEquals("1 row", countLabel(1, "row"))
+        assertEquals("2 rows", countLabel(2, "row"))
+        assertEquals("1 app", countLabel(1, "app"))
+        assertEquals("1 event", countLabel(1, "event"))
+        assertEquals("1 host", countLabel(1, "host"))
+    }
+
+    @Test
+    fun countLabelTakesAnExplicitPluralForAWordThatDoesNotTakeAnS() {
+        assertEquals("1 closed", countLabel(1, "closed", "closed"))
+        assertEquals("7 closed", countLabel(7, "closed", "closed"))
+    }
+
     @Test
     fun connTabTextIsTabSeparatedAndCarriesTheRemote() {
         val text = connTabText(screenConn(), revDns = false, unit = RateUnit.BYTES, now = SCREEN_NOW)

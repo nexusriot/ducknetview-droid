@@ -25,6 +25,7 @@ import com.vlad.ducknetview.domain.model.CellularState
 import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.model.RateUnit
 import com.vlad.ducknetview.domain.model.WifiState
+import com.vlad.ducknetview.domain.net.LinkChoice
 import com.vlad.ducknetview.domain.rates.Units
 import com.vlad.ducknetview.ui.UiActions
 import com.vlad.ducknetview.ui.UiState
@@ -187,7 +188,10 @@ private fun NetworkListRow(row: NetworkRow, selected: Boolean, actions: UiAction
                 )
                 Text(
                     text = row.transportLabel + " · " +
-                        (row.addresses.firstOrNull() ?: if (row.up) "no address" else "down"),
+                        (
+                            LinkChoice.displayAddress(row.addresses)
+                                ?: if (row.up) "no address" else "down"
+                            ),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1,

@@ -52,7 +52,7 @@ import com.vlad.ducknetview.ui.components.SortChips
 import com.vlad.ducknetview.ui.components.TableSearchBar
 import com.vlad.ducknetview.ui.theme.DuckColors
 
-private val SERVICE_SORT_COLUMNS = listOf("proto", "port", "service", "exposure", "seen")
+internal val SERVICE_SORT_COLUMNS = listOf("proto", "port", "service", "exposure", "seen")
 
 @Composable
 fun ServicesScreen(
@@ -189,7 +189,15 @@ fun ServicesScreen(
 
                 state.services.isEmpty() -> EmptyState(
                     title = EMPTY_SERVICES,
-                    message = "The last scan found no listener matching the current search.",
+                    // A device with nothing listening is the ordinary case, and
+                    // blaming the search for it told the reader to go and fix a
+                    // search they had not typed.
+                    message = if (state.snapshot.services.isEmpty()) {
+                        "The last scan found nothing listening on this device. " +
+                            "That is the expected result for a phone that runs no server."
+                    } else {
+                        "The last scan found no listener matching the current search and filters."
+                    },
                     actionLabel = "Scan again",
                     onAction = { actions.scanServices() },
                     modifier = tableModifier.testTag(emptyTag(EMPTY_SERVICES)),

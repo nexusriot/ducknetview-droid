@@ -23,6 +23,7 @@ import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.LatencySample
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.ServiceRow
+import com.vlad.ducknetview.domain.net.LinkChoice
 import com.vlad.ducknetview.domain.rates.RateTracker
 import com.vlad.ducknetview.domain.rdns.RdnsCache
 import com.vlad.ducknetview.domain.totals.SessionTotals
@@ -285,6 +286,11 @@ class EngineController(
     private suspend fun tick(now: Long) {
         val sample = api.sample(now)
         val flows = VpnBridge.table
+        // The service stamps every new flow with this label but had no writer,
+        // so `network` was always empty: the Conns detail said "-", the CSV
+        // column exported blank, and the wlan0 / tun0 filter chips compared
+        // against "" and so emptied the table whichever one was picked.
+        VpnBridge.currentNetworkLabel = LinkChoice.underlyingLabel(sample.networks)
         val snap = assembler.assemble(
             now = now,
             api = sample,

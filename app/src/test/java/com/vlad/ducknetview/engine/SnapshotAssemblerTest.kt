@@ -63,13 +63,17 @@ class SnapshotAssemblerTest {
     }
 
     /** One poll: sample the device counters, then assemble, as the loop does. */
-    private fun tick(now: Long, flows: FlowTable?): com.vlad.ducknetview.domain.model.NetSnapshot {
+    private fun tick(
+        now: Long,
+        flows: FlowTable?,
+        settings: AppSettings = AppSettings(),
+    ): com.vlad.ducknetview.domain.model.NetSnapshot {
         val total = sampler.sampleDevice(now)
         return assembler.assemble(
             now = now,
             api = ApiSample(networks = emptyList(), total = total, perUid = emptyMap()),
             flows = flows,
-            settings = AppSettings(),
+            settings = settings,
             baseline = Baseline(emptySet(), 0L),
             watchlist = Watchlist(emptyList()),
             externalIp = null,
@@ -240,5 +244,67 @@ class SnapshotAssemblerTest {
 
         assertEquals(700L, rates.deltaOf(TrafficSampler.KEY_DEVICE_RX))
         assertEquals(300L, rates.deltaOf(TrafficSampler.KEY_DEVICE_TX))
+    }
+
+    /**
+     * `blocked` and `excludedFromVpn` were never written, so they sat at their
+     * `false` default for every app on every screen. That is not just a wrong
+     * label: the Apps sheet sends `!app.blocked`, so with the flag stuck false
+     * the button always asked to block — an app could be blocked from there and
+     * then never unblocked, and the "blocked" chip listed nothing while the
+     * engine was really dropping that app's packets.
+     */
+    @Test
+    fun `an app row reports the block and exclude state it was given`() {
+        val table = flowTableCarrying(400, 1_000L)
+        val uid = table.live().first().let { it.uid = 10135; it.uid }
+        val snap = tick(
+            1_000L,
+            table,
+            AppSettings(blockedUids = setOf(uid), excludedUids = setOf(uid)),
+        )
+
+        val row = snap.apps.single { it.uid == uid }
+        assertTrue("a blocked app reported blocked = false", row.blocked)
+        assertTrue("an excluded app reported excludedFromVpn = false", row.excludedFromVpn)
+    }
+
+    @Test
+    fun `an app row left out of both sets is neither blocked nor excluded`() {
+        val table = flowTableCarrying(400, 1_000L)
+        val uid = table.live().first().let { it.uid = 10135; it.uid }
+        val snap = tick(1_000L, table, AppSettings(blockedUids = setOf(99999)))
+
+        val row = snap.apps.single { it.uid == uid }
+        assertEquals(false, row.blocked)
+        assertEquals(false, row.excludedFromVpn)
+    }
+
+    /**
+     * A blocked app carries no traffic — that is the point of blocking it — so
+     * it had no flow in the table and `buildApps`, which listed only uids with
+     * flows, left it off the screen altogether. Its row is the only place to
+     * unblock it, so blocking an app made it disappear along with the control
+     * that would undo that.
+     */
+    @Test
+    fun `a blocked app with no live flow is still listed so it can be unblocked`() {
+        val snap = tick(
+            1_000L,
+            FlowTable(),
+            AppSettings(blockedUids = setOf(10135)),
+        )
+
+        val row = snap.apps.single { it.uid == 10135 }
+        assertTrue(row.blocked)
+        assertEquals(0, row.connCount)
+    }
+
+    @Test
+    fun `an app excluded from the vpn is listed for the same reason`() {
+        val snap = tick(1_000L, FlowTable(), AppSettings(excludedUids = setOf(10200)))
+
+        val row = snap.apps.single { it.uid == 10200 }
+        assertTrue(row.excludedFromVpn)
     }
 }
