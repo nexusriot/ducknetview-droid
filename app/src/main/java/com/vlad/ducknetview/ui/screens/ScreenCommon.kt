@@ -247,3 +247,16 @@ internal fun eventTabText(e: Event, now: Long): String = listOf(
  */
 internal fun countLabel(n: Int, singular: String, plural: String = singular + "s"): String =
     "$n ${if (n == 1) singular else plural}"
+
+/**
+ * What to say on a table that a snapshot file cannot fill.
+ *
+ * Events, names and usage history live in this device's own database, not in
+ * the snapshot format, so under a frozen snapshot there is nothing truthful to
+ * show. Saying so is the point: showing the live device's rows instead put one
+ * machine's history under a banner naming another machine's file.
+ */
+internal fun frozenTableMessage(label: String?, what: String): String =
+    "A snapshot file carries no $what, so there is none to show while " +
+        "browsing ${label ?: "a snapshot"}. Close the snapshot to see this " +
+        "device's own again."

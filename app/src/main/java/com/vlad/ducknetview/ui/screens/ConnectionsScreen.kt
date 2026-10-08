@@ -70,13 +70,22 @@ fun ConnectionsScreen(
     twoPane: Boolean = false,
 ) {
     if (!state.caps.hasConnections) {
+        // A snapshot taken in API mode has no connection table and never will:
+        // the file is fixed. Offering "Enable capture" there would start this
+        // device's own VPN, which has nothing to do with the file being read.
+        val frozen = state.snapshot.frozen
         EmptyState(
             title = EMPTY_CONNS_NO_CAPTURE,
-            message = "A live connection table needs the local VPN capture engine. " +
-                "Android does not let an app read other apps' sockets, so ducknetview " +
-                "routes traffic through its own on-device tunnel to see them. Nothing " +
-                "leaves the phone and packet contents are never stored.",
-            actionLabel = "Enable capture",
+            message = if (frozen) {
+                "This snapshot was taken with the capture engine off, so it carries no " +
+                    "connection table. Close the snapshot to watch this device instead."
+            } else {
+                "A live connection table needs the local VPN capture engine. " +
+                    "Android does not let an app read other apps' sockets, so ducknetview " +
+                    "routes traffic through its own on-device tunnel to see them. Nothing " +
+                    "leaves the phone and packet contents are never stored."
+            },
+            actionLabel = if (frozen) null else "Enable capture",
             onAction = { actions.startVpn() },
             modifier = modifier
                 .fillMaxSize()

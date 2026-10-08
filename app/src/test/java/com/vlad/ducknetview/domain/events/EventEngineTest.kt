@@ -153,7 +153,7 @@ class EventEngineTest {
         val engine = EventEngine()
         val known = Fixtures.service(port = 22)
         val rogue = Fixtures.service(port = 4444, appLabel = "Unknown")
-        val baseline = Baseline.from(listOf(known), at = 0)
+        val baseline = Baseline.from(listOf(known), at = 1_000L)
 
         val first = Fixtures.snapshot(atMillis = 1, services = listOf(known, rogue))
         val alerts = of(engine.diff(null, first, baseline, noWatchlist), EventKind.OFF_BASELINE)
@@ -284,6 +284,10 @@ class EventEngineTest {
         val cell = Fixtures.network(id = "c", ifaceName = "rmnet0", isDefault = false)
 
         val a = Fixtures.snapshot(networks = listOf(wifi))
+        // The engine remembers the link topology across polls now, so the first
+        // snapshot has to establish it — exactly as the poll loop does.
+        engine.diff(null, a, noBaseline, noWatchlist)
+
         val b = Fixtures.snapshot(networks = listOf(wifi, cell))
         assertEquals(listOf(EventKind.NETWORK_UP), kinds(engine.diff(a, b, noBaseline, noWatchlist)))
 
@@ -292,8 +296,12 @@ class EventEngineTest {
         assertEquals(listOf(EventKind.NETWORK_DOWN), kinds(down))
         assertEquals(EventLevel.WARN, down[0].level)
 
+        // Disappearing takes two polls to confirm: Android re-registers a
+        // network by losing and re-offering it, and a one-tick gap is not an
+        // outage. See NetworkIdentityTest.
         val d = Fixtures.snapshot(networks = listOf(cell))
-        val gone = engine.diff(c, d, noBaseline, noWatchlist)
+        assertTrue(of(engine.diff(c, d, noBaseline, noWatchlist), EventKind.NETWORK_DOWN).isEmpty())
+        val gone = engine.diff(d, d, noBaseline, noWatchlist)
         assertEquals(listOf(EventKind.NETWORK_DOWN), kinds(gone))
         assertEquals("vanished", gone[0].detail)
     }
@@ -303,8 +311,10 @@ class EventEngineTest {
         val engine = EventEngine()
         val before = Fixtures.network(addresses = listOf("192.168.1.5"))
         val after = before.copy(addresses = listOf("192.168.1.77"), metered = true)
+        val first = Fixtures.snapshot(networks = listOf(before))
+        engine.diff(null, first, noBaseline, noWatchlist)
         val events = engine.diff(
-            Fixtures.snapshot(networks = listOf(before)),
+            first,
             Fixtures.snapshot(networks = listOf(after)),
             noBaseline,
             noWatchlist,
@@ -318,9 +328,11 @@ class EventEngineTest {
     fun anUnchangedNetworkSaysNothing() {
         val engine = EventEngine()
         val n = Fixtures.network()
+        val first = Fixtures.snapshot(networks = listOf(n))
+        engine.diff(null, first, noBaseline, noWatchlist)
         assertTrue(
             engine.diff(
-                Fixtures.snapshot(networks = listOf(n)),
+                first,
                 Fixtures.snapshot(networks = listOf(n)),
                 noBaseline,
                 noWatchlist,

@@ -264,6 +264,21 @@ class MetricsServerTest {
         assertNull(server.lastError.value)
     }
 
+    /**
+     * Only a successful start used to clear the message, so a rejected port
+     * left its complaint on screen after the user had both corrected the port
+     * and switched the endpoint off: the field read 9187, the switch was off,
+     * and the line underneath still said "port 99999 is out of range".
+     */
+    @Test
+    fun turningTheEndpointOffClearsAPreviousError() {
+        assertFalse(server.start(70_000))
+        assertNotNull(server.lastError.value)
+        server.stop()
+        assertNull("the failure outlived the endpoint it was about", server.lastError.value)
+        assertFalse(server.running.value)
+    }
+
     @Test
     fun stopReleasesThePortSoTheSamePortCanBeReused() {
         val port = startOnEphemeralPort()

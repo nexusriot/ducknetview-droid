@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,10 +26,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.vlad.ducknetview.domain.model.AppSettings
@@ -138,18 +143,21 @@ fun SettingsScreen(
                 help = "Fires when a handshake or probe is slower than this.",
                 initial = s.alertRttMs.toString(),
                 tag = "settings:alertRttMs",
+                max = Int.MAX_VALUE.toLong(),
             ) { v -> actions.updateSettings { it.copy(alertRttMs = v.toInt()) } }
             NumberSetting(
                 label = "Connection growth (polls)",
                 help = "Fires when an app's connection count only grows for this many polls.",
                 initial = s.alertConnGrowthPolls.toString(),
                 tag = "settings:alertConnGrowthPolls",
+                max = Int.MAX_VALUE.toLong(),
             ) { v -> actions.updateSettings { it.copy(alertConnGrowthPolls = v.toInt()) } }
             NumberSetting(
                 label = "Fan-out (hosts per poll)",
                 help = "Fires when an app reaches this many new hosts in one poll.",
                 initial = s.alertFanoutHosts.toString(),
                 tag = "settings:alertFanoutHosts",
+                max = Int.MAX_VALUE.toLong(),
             ) { v -> actions.updateSettings { it.copy(alertFanoutHosts = v.toInt()) } }
 
             TextSetting(
@@ -233,6 +241,13 @@ fun SettingsScreen(
                 label = "Port",
                 help = "Unauthenticated: serve it on a trusted network only.",
                 initial = s.metricsPort.toString(),
+                max = 65535L,
+                // Every keystroke used to be applied, and each one rebinds the
+                // listening socket. Typing 8080 therefore served the
+                // unauthenticated metrics endpoint on port 80 on the way past
+                // — verified on the test tablet, where an app can bind a low
+                // port — and it stayed there for as long as the typing paused.
+                commitOnDone = true,
                 tag = "settings:metrics-port",
             ) { v -> actions.updateSettings { it.copy(metricsPort = v.toInt()) } }
             state.metricsUrl?.let { url ->
@@ -310,9 +325,23 @@ private fun SwitchRow(
 }
 
 /**
- * The field keeps whatever was typed; only the parsed value is pushed upstream.
- * Anything that is not a number — including an empty field — means 0, which is
- * the "rule disabled" value, so no input can put the settings into a bad state.
+ * A whole-number setting that says when it cannot use what was typed.
+ *
+ * It used to store `toLongOrNull() ?: 0L`, and 0 is documented on this very
+ * screen as "disables the rule" — so a number too large to parse turned the
+ * alert off while the box went on showing the number the user had typed. There
+ * was no error, and the field never re-seeds, so the screen disagreed with the
+ * engine until it was left and reopened. For a monitor, silently switching an
+ * alert off is the worst direction to fail in.
+ *
+ * An out-of-range value is now reported and simply not stored, which leaves the
+ * previous threshold in force. Emptying the field still means 0, because that
+ * is what the user is saying and the help text spells out what 0 does.
+ *
+ * @param max the largest value the setting can hold. [Int]-typed settings pass
+ *   [Int.MAX_VALUE]: they used to take `v.toInt()`, which truncates the low 32
+ *   bits rather than clamping, so 4294967296 became 0 (rule off) and
+ *   2147483648 became negative (also off).
  */
 @Composable
 private fun NumberSetting(
@@ -320,27 +349,78 @@ private fun NumberSetting(
     help: String,
     initial: String,
     tag: String,
+    max: Long = Long.MAX_VALUE,
+    commitOnDone: Boolean = false,
     onValue: (Long) -> Unit,
 ) {
     var text by remember { mutableStateOf(initial) }
+    val problem = numberProblem(text, max)
+    val latest = rememberUpdatedState(text)
+    val sink = rememberUpdatedState(onValue)
+
+    fun push(raw: String) {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) {
+            sink.value(0L)
+        } else {
+            trimmed.toLongOrNull()?.takeIf { it in 0..max }?.let(sink.value)
+        }
+    }
+
+    // A setting that only stores a number can be pushed on every keystroke.
+    // One that *opens a socket* cannot: see [commitOnDone].
+    if (commitOnDone) {
+        DisposableEffect(Unit) { onDispose { push(latest.value) } }
+    }
+
     Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         OutlinedTextField(
             value = text,
             onValueChange = { raw ->
                 text = raw
-                onValue(raw.trim().toLongOrNull() ?: 0L)
+                if (!commitOnDone) push(raw)
             },
             label = { Text(label) },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth().testTag(tag),
+            isError = problem != null,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = if (commitOnDone) ImeAction.Done else ImeAction.Default,
+            ),
+            keyboardActions = KeyboardActions(onDone = { push(latest.value) }),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(tag)
+                .then(
+                    if (commitOnDone) {
+                        Modifier.onFocusChanged { if (!it.isFocused) push(latest.value) }
+                    } else {
+                        Modifier
+                    }
+                ),
         )
         Text(
-            help,
+            problem ?: help,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (problem != null) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.testTag("$tag:problem"),
         )
     }
+}
+
+/** Why [text] cannot be stored as a threshold, or null when it can. */
+internal fun numberProblem(text: String, max: Long): String? {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return null
+    val value = trimmed.toLongOrNull()
+        ?: return "not a whole number, so the setting still holds its previous value"
+    if (value < 0) return "cannot be negative, so the setting still holds its previous value"
+    if (value > max) return "cannot be above $max, so the setting still holds its previous value"
+    return null
 }
 
 @Composable

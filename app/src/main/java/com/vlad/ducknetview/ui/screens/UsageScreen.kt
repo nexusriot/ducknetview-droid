@@ -124,9 +124,13 @@ fun UsageScreen(
             if (!state.usageLoading) {
                 EmptyState(
                     title = EMPTY_USAGE,
-                    message = "Daily totals are rolled up as the app runs, and the last " +
-                        "${UsageRollup.MAX_DAYS} days are kept. Come back tomorrow and this " +
-                        "screen will have something to compare.",
+                    message = if (state.snapshot.frozen) {
+                        frozenTableMessage(state.snapshot.frozenLabel, "usage history")
+                    } else {
+                        "Daily totals are rolled up as the app runs, and the last " +
+                            "${UsageRollup.MAX_DAYS} days are kept. Come back tomorrow and this " +
+                            "screen will have something to compare."
+                    },
                     actionLabel = "Refresh",
                     onAction = { actions.refreshUsage() },
                 )

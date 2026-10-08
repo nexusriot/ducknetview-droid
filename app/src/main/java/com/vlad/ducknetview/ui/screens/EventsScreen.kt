@@ -150,9 +150,13 @@ fun EventsScreen(
             if (state.events.isEmpty()) {
                 EmptyState(
                     title = EMPTY_EVENTS,
-                    message = "The event log records what changed — a listener appearing, a " +
-                        "network going down, a threshold breached — rather than the current " +
-                        "state. An empty log means nothing has changed yet.",
+                    message = if (state.snapshot.frozen) {
+                        frozenTableMessage(state.snapshot.frozenLabel, "event log")
+                    } else {
+                        "The event log records what changed — a listener appearing, a " +
+                            "network going down, a threshold breached — rather than the current " +
+                            "state. An empty log means nothing has changed yet."
+                    },
                     modifier = tableModifier.testTag(emptyTag(EMPTY_EVENTS)),
                 )
             } else {

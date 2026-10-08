@@ -142,4 +142,52 @@ class LinkChoiceTest {
         val addresses = listOf("fe80::1", "192.168.1.5")
         assertEquals("192.168.1.5", LinkChoice.displayAddress(addresses))
     }
+
+    // ---------------- underlying(), for the address to advertise ----------------
+
+    /**
+     * The Prometheus scrape URL is built from this. It used to come from "the
+     * default network", which while capture is running is the app's own TUN —
+     * so the URL shown on the Settings screen was http://10.215.173.1:9187/
+     * metrics, the one address on the device that no other machine can reach.
+     * Scraping it from the laptop got nothing; the Wi-Fi address answered 200.
+     */
+    @Test
+    fun `underlying gives the reachable link while the tunnel holds the default route`() {
+        val networks = listOf(
+            Fixtures.network(
+                id = "787",
+                ifaceName = "tun0",
+                transport = Transport.VPN,
+                isDefault = true,
+                addresses = listOf("10.215.173.1/30", "fd00:6475:636b::1/126"),
+            ),
+            Fixtures.network(
+                id = "786",
+                ifaceName = "wlan0",
+                isDefault = false,
+                addresses = listOf("192.168.88.34/24"),
+            ),
+        )
+        val chosen = LinkChoice.underlying(networks)
+        assertEquals("wlan0", chosen?.ifaceName)
+        assertEquals(listOf("192.168.88.34/24"), chosen?.addresses)
+    }
+
+    @Test
+    fun `underlying is null when only a tunnel is up`() {
+        val networks = listOf(
+            Fixtures.network(ifaceName = "tun0", transport = Transport.VPN, isDefault = true),
+        )
+        assertNull(LinkChoice.underlying(networks))
+    }
+
+    @Test
+    fun `underlying and underlyingLabel agree`() {
+        val networks = listOf(
+            Fixtures.network(id = "a", ifaceName = "tun0", transport = Transport.VPN, isDefault = true),
+            Fixtures.network(id = "b", ifaceName = "wlan0", isDefault = false),
+        )
+        assertEquals(LinkChoice.underlying(networks)?.ifaceName, LinkChoice.underlyingLabel(networks))
+    }
 }

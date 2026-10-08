@@ -29,6 +29,17 @@ class EventEngine(
     private val newHosts = ArrayList<String>()
 
     /**
+     * The link topology as last reported to the user, keyed by [linkKey], and
+     * how many consecutive diffs each absent link has been missing for.
+     *
+     * Deliberately not cleared by [reset]: the set of links this device has is
+     * not a per-session dedupe, and it does not change because capture
+     * restarted. Clearing it would announce every network as newly appeared.
+     */
+    private val knownLinks = LinkedHashMap<String, NetworkRow>()
+    private val missingTicks = HashMap<String, Int>()
+
+    /**
      * Public addresses first seen during the most recent [diff]. The caller
      * persists these so "first contact" survives a process restart; the set
      * above only survives the session. Populated even when the per-kind cap
@@ -177,15 +188,41 @@ class EventEngine(
         }
     }
 
+    /**
+     * What makes two snapshots' entries the same link.
+     *
+     * Not [NetworkRow.id]: that is the platform's `Network` object, whose netId
+     * is re-issued whenever Android re-registers a network — which it does
+     * every time a VPN comes up or goes down. Keying on it meant that turning
+     * this app's own capture on made the Wi-Fi's id step from 785 to 786 while
+     * the link never dropped a packet, and the diff below read that as the old
+     * network vanishing and a new one appearing: a WARN "network_down …
+     * vanished" and an alert notification, for an outage that never happened
+     * and that the user had just caused by pressing this app's own switch.
+     *
+     * An interface name is unique among the networks up at one time and
+     * survives re-registration, so it is the identity a person means by "the
+     * same link". The id remains the key for byte counters, where a fresh
+     * registration really does restart from zero.
+     */
+    private fun linkKey(n: NetworkRow): String =
+        if (n.ifaceName.isNotEmpty()) "${n.transport}/${n.ifaceName}" else "id/${n.id}"
+
     private fun networkEvents(prev: NetSnapshot?, cur: NetSnapshot, rec: Recorder) {
         // The first snapshot is the baseline, not a burst of "network appeared".
-        if (prev == null) return
+        if (prev == null) {
+            for (n in cur.networks) knownLinks[linkKey(n)] = n
+            return
+        }
 
-        val before = prev.networks.associateBy { it.id }
-        val after = cur.networks.associateBy { it.id }
+        val after = cur.networks.associateBy(::linkKey)
 
         for (n in cur.networks) {
-            val p = before[n.id]
+            val key = linkKey(n)
+            // Back before it was ever called down, so its absence was a
+            // re-registration rather than an outage: start the count again.
+            missingTicks.remove(key)
+            val p = knownLinks[key]
             when {
                 p == null -> rec.add(
                     if (n.up) EventLevel.INFO else EventLevel.WARN,
@@ -208,11 +245,26 @@ class EventEngine(
                     }
                 }
             }
+            knownLinks[key] = n
         }
 
-        for (p in prev.networks) {
-            if (p.id in after) continue
-            rec.add(EventLevel.WARN, EventKind.NETWORK_DOWN, label(p), "vanished")
+        // A link is called down only once it has been missing from two
+        // consecutive polls. Android re-registers a network by losing it and
+        // offering it again, and the two callbacks can straddle a tick, so the
+        // published list is briefly without an interface that never stopped
+        // carrying traffic. Reporting on the first absence turned that into a
+        // WARN "vanished" and an alert notification — a fabricated outage, and
+        // one this app caused itself every time its own capture was switched
+        // on. A genuine drop lasts longer than a poll, so it still arrives,
+        // one interval later.
+        for (key in knownLinks.keys.toList()) {
+            if (key in after) continue
+            val strikes = (missingTicks[key] ?: 0) + 1
+            missingTicks[key] = strikes
+            if (strikes < DOWN_CONFIRM_POLLS) continue
+            val gone = knownLinks.remove(key) ?: continue
+            missingTicks.remove(key)
+            rec.add(EventLevel.WARN, EventKind.NETWORK_DOWN, label(gone), "vanished")
         }
     }
 
@@ -292,5 +344,12 @@ class EventEngine(
 
         /** Remote hosts remembered for dedupe, oldest evicted first. */
         const val SEEN_CAP = 2048
+
+        /**
+         * Consecutive polls a link must be missing for before it is called
+         * down. Two, so that a re-registration straddling one tick is not an
+         * outage; the cost is one poll interval of delay on a real one.
+         */
+        const val DOWN_CONFIRM_POLLS = 2
     }
 }

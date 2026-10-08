@@ -67,9 +67,15 @@ class MetricsServer(private val snapshotProvider: () -> NetSnapshot) {
                 bind(InetSocketAddress(requestedPort), BACKLOG)
             }
         } catch (e: BindException) {
+            // Not "privileged": Android lets an app bind a low port, and this
+            // one really did serve on port 80 of the test tablet. Telling the
+            // user that an app cannot use the port would send them to change a
+            // setting that was never the problem, so the cause a BindException
+            // actually has is named first and the caveat follows it.
             fail(
                 if (requestedPort in 1..1023) {
-                    "port $requestedPort is privileged and cannot be used by an app; pick one above 1023"
+                    "port $requestedPort is already in use, or refused to this app; " +
+                        "a port above 1023 is less likely to be either"
                 } else {
                     "port $requestedPort is already in use"
                 }
@@ -102,6 +108,12 @@ class MetricsServer(private val snapshotProvider: () -> NetSnapshot) {
         server = null
         port = null
         _running.value = false
+        // A failure message is about an endpoint that was being asked to run.
+        // Only a successful start used to clear it, so after a rejected port
+        // the complaint outlived both the switch and the port that caused it:
+        // the field could read 9187, the endpoint be off, and the line
+        // underneath still say "port 99999 is out of range".
+        _lastError.value = null
         // Closing the listening socket releases the port at once and makes the
         // blocked accept() throw, which is how the loop learns to finish.
         runCatching { socket?.close() }

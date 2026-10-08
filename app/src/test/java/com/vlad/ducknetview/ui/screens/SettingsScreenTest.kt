@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextReplacement
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.RateUnit
@@ -93,10 +94,34 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun garbageInAnAlertFieldParsesAsZeroWithoutCrashing() {
+    fun garbageInAnAlertFieldLeavesTheThresholdAloneAndSaysSo() {
+        // This used to assert the opposite — that garbage parsed as 0 — which
+        // is crash-safe but means the rule is switched off, because 0 is the
+        // documented "disabled" value. The field keeps showing what was typed,
+        // so nothing on screen said the alert had just been turned off.
         val actions = RecordingActions(AppSettings(alertRttMs = 250))
         show(screenState(settings = AppSettings(alertRttMs = 250)), actions)
         rule.onNodeWithTag("settings:alertRttMs").performScrollTo().performTextReplacement("not a number")
+        assertEquals("the threshold was silently disabled", 250, actions.settings.alertRttMs)
+        rule.onNodeWithTag("settings:alertRttMs:problem").assertExists()
+    }
+
+    @Test
+    fun aValueTooLargeForTheSettingLeavesItAloneAndSaysSo() {
+        // 4294967296.toInt() is 0, and every alert rule is gated on `> 0`, so
+        // the old `v.toInt()` turned the rule off without a word.
+        val actions = RecordingActions(AppSettings(alertRttMs = 250))
+        show(screenState(settings = AppSettings(alertRttMs = 250)), actions)
+        rule.onNodeWithTag("settings:alertRttMs").performScrollTo().performTextReplacement("4294967296")
+        assertEquals(250, actions.settings.alertRttMs)
+        rule.onNodeWithTag("settings:alertRttMs:problem").assertExists()
+    }
+
+    @Test
+    fun clearingAnAlertFieldStillMeansZero() {
+        val actions = RecordingActions(AppSettings(alertRttMs = 250))
+        show(screenState(settings = AppSettings(alertRttMs = 250)), actions)
+        rule.onNodeWithTag("settings:alertRttMs").performScrollTo().performTextReplacement("")
         assertEquals(0, actions.settings.alertRttMs)
     }
 
@@ -200,7 +225,44 @@ class SettingsScreenTest {
         rule.onNodeWithTag("settings:metrics-enabled").performScrollTo().performClick()
         rule.onNodeWithTag("settings:metrics-port").performScrollTo().performTextReplacement("9999")
         assertTrue(actions.settings.metricsEnabled)
+        // The port is committed, not pushed per keystroke — see below.
+        rule.onNodeWithTag("settings:metrics-port").performImeAction()
         assertEquals(9999, actions.settings.metricsPort)
+    }
+
+    /**
+     * Every keystroke used to be applied, and each application rebinds the
+     * listening socket. On the test tablet, typing 8080 put the unauthenticated
+     * metrics endpoint live on port 80 on the way past — Android lets an app
+     * bind a low port — and it stayed there for as long as the typing paused.
+     * A half-typed port is not a port the user asked to serve on.
+     */
+    @Test
+    fun aHalfTypedPortIsNotOpened() {
+        val actions = RecordingActions(AppSettings(metricsPort = 9187))
+        show(screenState(settings = AppSettings(metricsPort = 9187)), actions)
+        val field = rule.onNodeWithTag("settings:metrics-port").performScrollTo()
+
+        field.performTextReplacement("8")
+        assertEquals("a one-digit prefix was applied", 9187, actions.settings.metricsPort)
+        field.performTextReplacement("80")
+        assertEquals("port 80 was opened while typing 8080", 9187, actions.settings.metricsPort)
+        field.performTextReplacement("808")
+        assertEquals(9187, actions.settings.metricsPort)
+
+        field.performTextReplacement("8080")
+        field.performImeAction()
+        assertEquals("the committed port was not applied", 8080, actions.settings.metricsPort)
+    }
+
+    @Test
+    fun anAlertThresholdStillAppliesAsItIsTyped() {
+        // Only the port defers: a threshold opens no socket, and waiting for a
+        // commit would make the other fields feel broken.
+        val actions = RecordingActions()
+        show(screenState(), actions)
+        rule.onNodeWithTag("settings:alertAppBps").performScrollTo().performTextReplacement("5000")
+        assertEquals(5000L, actions.settings.alertAppBps)
     }
 
     @Test

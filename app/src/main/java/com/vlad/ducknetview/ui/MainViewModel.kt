@@ -30,6 +30,7 @@ import com.vlad.ducknetview.domain.model.SearchMode
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.StateFilter
 import com.vlad.ducknetview.domain.model.Transport
+import com.vlad.ducknetview.domain.net.LinkChoice
 import com.vlad.ducknetview.domain.search.Search
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.domain.search.SearchResult
@@ -112,6 +113,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         val frozen = misc.frozen
         val snap = frozen?.snapshot?.copy(frozen = true, frozenLabel = frozen.label) ?: liveSnap
 
+        // "Entirely" has to include the three tables that come from this
+        // device's own database rather than from the snapshot: events, names
+        // and usage history. They used to go on screen unchanged under the
+        // "browsing <file>" banner, so a snapshot taken on a server was shown
+        // interleaved with this phone's event log — two machines' data in one
+        // view, with nothing saying which was which. The snapshot format
+        // carries none of the three, so under it they are empty.
+        val liveEvents = if (frozen != null) emptyList() else events
+        val liveDomains = if (frozen != null) emptyList() else misc.domains
+        val liveUsage = if (frozen != null) emptyList() else misc.usage
+
         val caps = when {
             frozen != null -> Capabilities.of(snap.engine)
             else -> Capabilities.of(if (vpnRunning) EngineMode.VPN else EngineMode.API)
@@ -163,7 +175,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         // which can change under a row (an app updating its name) and so is
         // resolved on read rather than frozen into the database.
         val watchlist = watchlistOf(settings.watchlist)
-        val domainsLabelled = misc.domains.map { d ->
+        val domainsLabelled = liveDomains.map { d ->
             val app = deps.catalog.row(d.uid)
             d.copy(
                 appLabel = app.label,
@@ -189,7 +201,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Sorters.services(settings.servicesSortCol, settings.servicesSortDesc)
         )
 
-        val visibleEvents = events.filter {
+        val visibleEvents = liveEvents.filter {
             when (eventFilter) {
                 EventLevelFilter.ALL -> true
                 EventLevelFilter.WARN_PLUS ->
@@ -234,7 +246,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             domains = domains,
             events = eventsSearched.items,
             eventFilter = eventFilter,
-            unackedAlerts = events.count {
+            unackedAlerts = liveEvents.count {
                 it.level == com.vlad.ducknetview.domain.model.EventLevel.ALERT &&
                     it.at > settings.alertsAckedAt
             },
@@ -252,7 +264,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             matchedRows = if (highlighting) matched else emptySet(),
             matchCursor = if (highlighting) misc.matchCursor else -1,
             wifiPermissionGranted = hasWifiPermission(misc.permissionEpoch),
-            usage = misc.usage,
+            usage = liveUsage,
             usageLoading = misc.usageLoading,
             metricsUrl = if (misc.metricsRunning) metricsUrl(snap) else null,
             metricsError = misc.metricsError,
@@ -287,8 +299,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
      */
     private fun metricsUrl(snap: NetSnapshot): String? {
         val port = deps.metricsServer.boundPort ?: return null
-        val default = snap.networks.firstOrNull { it.isDefault }?.addresses.orEmpty()
-        return MetricsServer.lanUrl(default, port)
+        // Not the default network: while capture is on that is this app's own
+        // TUN, and the URL printed here was http://10.215.173.1:9187/metrics —
+        // the one address on the device no other machine can reach. The
+        // endpoint binds the wildcard, so what to advertise is the address of
+        // the link the device is actually reachable on.
+        val reachable = LinkChoice.underlying(snap.networks)?.addresses.orEmpty()
+        return MetricsServer.lanUrl(reachable, port)
+            ?: MetricsServer.lanUrl(
+                snap.networks
+                    .filter { !it.isNoise && it.transport != Transport.VPN }
+                    .flatMap { it.addresses },
+                port,
+            )
             ?: MetricsServer.lanUrl(snap.networks.filter { !it.isNoise }.flatMap { it.addresses }, port)
     }
 

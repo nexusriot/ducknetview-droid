@@ -29,6 +29,18 @@ class Baseline(val keys: Set<String>, val savedAt: Long) {
 
     val isEmpty: Boolean get() = keys.isEmpty()
 
+    /**
+     * Whether the user has taken a baseline at all.
+     *
+     * This is the opt-in gate, and it used to be `keys.isEmpty()` — which
+     * cannot tell "no baseline yet" apart from "a baseline of nothing". A
+     * phone with no listening sockets is the ideal moment to take one, and
+     * exactly that baseline could never flag anything: start a server
+     * afterwards and the screen still reported "0 off". The save time is
+     * recorded either way, so it is the honest flag.
+     */
+    val saved: Boolean get() = savedAt > 0L
+
     val size: Int get() = keys.size
 
     fun contains(row: ServiceRow): Boolean = row.baselineKey in keys
@@ -38,7 +50,7 @@ class Baseline(val keys: Set<String>, val savedAt: Long) {
      * the user opts in.
      */
     fun isOffBaseline(row: ServiceRow): Boolean {
-        if (isEmpty || !baselineEligible(row)) return false
+        if (!saved || !baselineEligible(row)) return false
         return row.baselineKey !in keys
     }
 
@@ -60,7 +72,7 @@ class Baseline(val keys: Set<String>, val savedAt: Long) {
 
     /** Listeners in [rows] that the baseline does not cover. */
     fun offBaseline(rows: List<ServiceRow>): List<ServiceRow> =
-        if (isEmpty) emptyList() else rows.filter { isOffBaseline(it) }
+        if (!saved) emptyList() else rows.filter { isOffBaseline(it) }
 
     /** Sorted so a persisted baseline stays diffable between saves. */
     fun sortedKeys(): List<String> = keys.sorted()

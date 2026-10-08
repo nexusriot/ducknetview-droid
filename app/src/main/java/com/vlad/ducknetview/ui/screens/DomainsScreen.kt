@@ -140,6 +140,12 @@ fun DomainsScreen(
 
         val table: @Composable (Modifier) -> Unit = { tableModifier ->
             when {
+                state.domains.isEmpty() && state.snapshot.frozen -> EmptyState(
+                    title = EMPTY_DOMAINS,
+                    message = frozenTableMessage(state.snapshot.frozenLabel, "name history"),
+                    modifier = tableModifier.testTag(emptyTag(EMPTY_DOMAINS)),
+                )
+
                 state.domains.isEmpty() && !state.caps.hasConnections -> EmptyState(
                     title = EMPTY_DOMAINS_NO_CAPTURE,
                     message = "Names are read off the traffic the capture engine relays. " +

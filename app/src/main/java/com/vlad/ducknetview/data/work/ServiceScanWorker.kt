@@ -41,7 +41,9 @@ class ServiceScanWorker(
         // No baseline is the TUI's exit code 2: there is nothing to compare
         // against, so there is no finding to report. WorkScheduler also cancels
         // the job in this state; this covers the window before the cancel lands.
-        if (settings.baseline.isEmpty()) return Result.success()
+        // The save time, not the key set: a baseline taken on a device with
+        // nothing listening is a real baseline, and the one most worth having.
+        if (settings.baselineAt <= 0L) return Result.success()
 
         val scanned = try {
             PortScanner().scan(
@@ -104,7 +106,7 @@ object ServiceScanLogic {
         lastAlertedAt: Map<String, Long>,
         now: Long,
     ): List<ServiceRow> {
-        if (baseline.isEmpty) return emptyList()
+        if (!baseline.saved) return emptyList()
         val out = ArrayList<ServiceRow>()
         val emitted = HashSet<String>()
         for (row in scanned) {

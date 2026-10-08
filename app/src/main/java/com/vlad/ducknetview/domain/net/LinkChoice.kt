@@ -23,14 +23,21 @@ object LinkChoice {
      * transport is skipped and the best remaining network wins: the default
      * one, else a validated one, else whatever is up.
      */
-    fun underlyingLabel(networks: List<NetworkRow>): String {
+    fun underlyingLabel(networks: List<NetworkRow>): String =
+        underlying(networks)?.ifaceName ?: ""
+
+    /**
+     * The network [underlyingLabel] names, for callers that need more of it
+     * than its name — the address another machine can reach this device on,
+     * for instance, which is never the tunnel's.
+     */
+    fun underlying(networks: List<NetworkRow>): NetworkRow? {
         val candidates = networks.filter { it.transport != Transport.VPN && it.ifaceName.isNotEmpty() }
-        if (candidates.isEmpty()) return ""
-        val best = candidates.firstOrNull { it.isDefault }
+        if (candidates.isEmpty()) return null
+        return candidates.firstOrNull { it.isDefault }
             ?: candidates.firstOrNull { it.validated && it.up }
             ?: candidates.firstOrNull { it.up }
             ?: candidates.first()
-        return best.ifaceName
     }
 
     /**

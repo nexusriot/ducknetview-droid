@@ -64,7 +64,7 @@ object WorkScheduler {
      * against", so scheduling one would burn the radio and the battery to
      * produce no output.
      */
-    fun scanEnabled(settings: AppSettings): Boolean = settings.baseline.isNotEmpty()
+    fun scanEnabled(settings: AppSettings): Boolean = settings.baselineAt > 0L
 
     fun scanRequest(): PeriodicWorkRequest =
         PeriodicWorkRequestBuilder<ServiceScanWorker>(SCAN_INTERVAL_HOURS, TimeUnit.HOURS)

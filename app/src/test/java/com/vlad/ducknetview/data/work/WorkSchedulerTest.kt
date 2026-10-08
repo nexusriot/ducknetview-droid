@@ -28,7 +28,11 @@ class WorkSchedulerTest {
 
     @Test
     fun `a saved baseline enables the scan job`() {
-        assertTrue(WorkScheduler.scanEnabled(AppSettings(baseline = listOf("tcp|127.0.0.1:22"))))
+        assertTrue(
+            WorkScheduler.scanEnabled(
+                AppSettings(baseline = listOf("tcp|127.0.0.1:22"), baselineAt = 1_000L)
+            )
+        )
     }
 
     @Test
