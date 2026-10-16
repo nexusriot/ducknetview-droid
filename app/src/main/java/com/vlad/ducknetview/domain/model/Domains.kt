@@ -7,10 +7,17 @@ package com.vlad.ducknetview.domain.model
  * what it *told the server it wanted*, and on a device with Private DNS on only
  * the second is observable. A row says which, so "no DNS activity at all" reads
  * as the encrypted-resolver story it is rather than as an idle device.
+ *
+ * [QUIC] is kept apart from [SNI] although both are a `server_name` sent in a
+ * ClientHello, because the two say different things about what the app is
+ * doing: a QUIC row is an HTTP/3 flow on UDP, which is the traffic that was
+ * invisible on this screen until the Initial packet could be read, and which
+ * is still the first thing to suspect when a row looks absent.
  */
 enum class NameSource(val label: String) {
     DNS("DNS"),
     SNI("SNI"),
+    QUIC("QUIC"),
 }
 
 /** One sighting of a name, as the capture engine observes it. */

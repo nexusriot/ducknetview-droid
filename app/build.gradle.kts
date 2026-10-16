@@ -75,6 +75,14 @@ android {
     }
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     sourceSets.getByName("debug").assets.srcDir("$projectDir/schemas")
+
+    // Test helpers both suites need. The QUIC Initial builder is the reason
+    // it exists: the JVM test builds packets to read them back, and the
+    // device test has to put the *same* bytes on the wire through the TUN, so
+    // a second copy of a crypto construction is exactly the thing that drifts
+    // until one of the two is quietly testing something else.
+    sourceSets.getByName("test").java.srcDir("$projectDir/src/sharedTest/java")
+    sourceSets.getByName("androidTest").java.srcDir("$projectDir/src/sharedTest/java")
 }
 
 ksp {

@@ -228,6 +228,41 @@ object Prometheus {
 
         b.family("app_session_transmit_bytes", "Bytes transmitted by the app this session.", GAUGE)
         for (a in shown) b.point("app_session_transmit_bytes", num(a.sessionTx), appLabels(a))
+
+        // A blocked app is invisible in every other series here by
+        // construction — no flows, no bytes — so without this one a scrape
+        // cannot distinguish a firewalled app from an idle one.
+        b.family(
+            "app_blocked_attempts",
+            "Connections refused for this app since capture started.",
+            GAUGE,
+        )
+        for (a in shown) b.point("app_blocked_attempts", num(a.blockedAttempts), appLabels(a))
+
+        b.family("blocked_attempts", "Connections refused across all apps.", GAUGE)
+        b.point("blocked_attempts", num(s.apps.sumOf { it.blockedAttempts }))
+
+        // Emitted only when a cap is set. A budget of zero scraped as a real
+        // series would read as "the allowance is exhausted" on every
+        // dashboard that divides by it.
+        val q = s.quota
+        if (q.configured) {
+            b.family("quota_cap_bytes", "Configured allowance for the billing cycle.", GAUGE)
+            b.point("quota_cap_bytes", num(q.capBytes))
+
+            b.family("quota_used_bytes", "Bytes used so far this billing cycle.", GAUGE)
+            b.point("quota_used_bytes", num(q.usedBytes))
+
+            b.family(
+                "quota_projected_bytes",
+                "Cycle total projected from the rate so far.",
+                GAUGE,
+            )
+            b.point("quota_projected_bytes", num(q.projectedBytes))
+
+            b.family("quota_cycle_days_remaining", "Days left in the billing cycle.", GAUGE)
+            b.point("quota_cycle_days_remaining", num(q.daysRemaining.toLong()))
+        }
     }
 
     private fun appLabels(a: AppRow): List<Pair<String, String>> = listOf(

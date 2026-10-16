@@ -31,7 +31,8 @@ class TablePipelineTest {
     }
 
     /** The UiState fields a screen renders as a table of rows. */
-    private val tableFields = listOf("conns", "closed", "apps", "services", "domains", "events")
+    private val tableFields =
+        listOf("conns", "closed", "apps", "services", "domains", "neighbours", "events")
 
     @Test
     fun `no table is published straight off the snapshot`() {

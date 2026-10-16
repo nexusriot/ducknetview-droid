@@ -5,16 +5,19 @@ import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.Capabilities
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.EngineMode
+import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.domain.model.Scope
 import com.vlad.ducknetview.domain.model.SecurityCounts
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.Throughput
+import com.vlad.ducknetview.domain.net.NetworkTrust
 import com.vlad.ducknetview.domain.baseline.Baseline
 import com.vlad.ducknetview.domain.rates.RateTracker
 import com.vlad.ducknetview.domain.rdns.RdnsCache
 import com.vlad.ducknetview.domain.totals.SessionTotals
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.engine.api.ApiSample
 import com.vlad.ducknetview.engine.api.AppCatalog
@@ -60,6 +63,11 @@ class SnapshotAssembler(
     private var services: List<ServiceRow> = emptyList()
     private var serviceScanAt: Long = 0L
     private var todayPerUid: Map<Int, Pair<Long, Long>> = emptyMap()
+    private var blockedAttempts: Map<Int, Long> = emptyMap()
+    private var neighbours: List<NeighbourRow> = emptyList()
+    private var neighbourScanAt: Long = 0L
+    private var neighbourSubnet: String = ""
+    private var quota: QuotaStatus = QuotaStatus()
 
     fun configure(deviceName: String, startedAt: Long) {
         this.deviceName = deviceName
@@ -69,6 +77,17 @@ class SnapshotAssembler(
     fun setServices(rows: List<ServiceRow>, at: Long) {
         services = rows
         serviceScanAt = at
+    }
+
+    /**
+     * The last neighbour sweep's result. An empty list with a non-zero [at] is
+     * a real answer — the link answered nothing — and the screen distinguishes
+     * it from never having scanned, which is what [at] is for.
+     */
+    fun setNeighbours(rows: List<NeighbourRow>, at: Long, subnet: String) {
+        neighbours = rows
+        neighbourScanAt = at
+        neighbourSubnet = subnet
     }
 
     /**
@@ -83,6 +102,22 @@ class SnapshotAssembler(
         todayPerUid = byUid
     }
 
+    /**
+     * Connections refused per app since capture started, counted by the
+     * engine as it drains the capture path's observations.
+     *
+     * A setter rather than an `assemble` parameter, matching [setTodayUsage]:
+     * the engine owns the running total because it outlives any one tick.
+     */
+    fun setBlockedAttempts(byUid: Map<Int, Long>) {
+        blockedAttempts = byUid
+    }
+
+    /** The billing cycle, refreshed on the slow usage cadence. */
+    fun setQuota(status: QuotaStatus) {
+        quota = status
+    }
+
     fun assemble(
         now: Long,
         api: ApiSample,
@@ -94,6 +129,7 @@ class SnapshotAssembler(
         externalIpAt: Long,
         latency: List<com.vlad.ducknetview.domain.model.LatencySample>,
         scanRunning: Boolean,
+        neighbourScanRunning: Boolean = false,
     ): NetSnapshot {
         val mode = if (flows != null) EngineMode.VPN else EngineMode.API
 
@@ -120,6 +156,11 @@ class SnapshotAssembler(
             row.copy(offBaseline = baseline.isOffBaseline(row))
         }
 
+        val networks = api.networks.map { it.copy(trust = NetworkTrust.of(it, settings)) }
+        val defaultLink = networks.firstOrNull { it.isDefault && !it.isNoise }
+        val untrustedDefault = defaultLink != null &&
+            NetworkTrust.shouldAct(defaultLink.trust, settings)
+
         return NetSnapshot(
             atMillis = now,
             engine = mode,
@@ -127,14 +168,18 @@ class SnapshotAssembler(
             intervalSeconds = settings.intervalSeconds,
             deviceName = deviceName,
             uptimeMillis = (now - startedAt).coerceAtLeast(0L),
-            networks = api.networks,
-            selectedNetworkId = api.networks.firstOrNull { it.isDefault }?.id,
+            networks = networks,
+            selectedNetworkId = networks.firstOrNull { it.isDefault }?.id,
             conns = conns,
             closedConns = flows?.closedSnapshot() ?: emptyList(),
             apps = apps,
             services = markedServices,
             serviceScanAt = serviceScanAt,
             serviceScanRunning = scanRunning,
+            neighbours = neighbours,
+            neighbourScanAt = neighbourScanAt,
+            neighbourScanRunning = neighbourScanRunning,
+            neighbourSubnet = neighbourSubnet,
             total = api.total,
             totalPeakRx = peakRx,
             totalPeakTx = peakTx,
@@ -151,6 +196,8 @@ class SnapshotAssembler(
             externalIp = externalIp,
             externalIpAt = externalIpAt,
             security = securityCounts(markedServices, conns),
+            quota = quota,
+            untrustedDefault = untrustedDefault,
             frozen = false,
         )
     }
@@ -246,6 +293,7 @@ class SnapshotAssembler(
                 // unblocked again.
                 blocked = uid in settings.blockedUids,
                 excludedFromVpn = uid in settings.excludedUids,
+                blockedAttempts = blockedAttempts[uid] ?: 0L,
             )
         }
     }

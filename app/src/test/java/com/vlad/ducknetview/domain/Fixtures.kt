@@ -11,6 +11,7 @@ import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.Transport
 import com.vlad.ducknetview.domain.net.IpScope
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 
 /** Row builders shared by the domain tests; every argument has a usable default. */
 object Fixtures {
@@ -124,6 +125,7 @@ object Fixtures {
         dnsServers: List<String> = listOf("192.168.1.1"),
         metered: Boolean = false,
         validated: Boolean = true,
+        captivePortal: Boolean = false,
     ): NetworkRow = NetworkRow(
         id = id,
         ifaceName = ifaceName,
@@ -135,6 +137,7 @@ object Fixtures {
         dnsServers = dnsServers,
         metered = metered,
         validated = validated,
+        captivePortal = captivePortal,
     )
 
     fun closed(
@@ -151,12 +154,14 @@ object Fixtures {
         apps: List<AppRow> = emptyList(),
         services: List<ServiceRow> = emptyList(),
         networks: List<NetworkRow> = emptyList(),
+        quota: QuotaStatus = QuotaStatus(),
     ): NetSnapshot = NetSnapshot(
         atMillis = atMillis,
         conns = conns,
         apps = apps,
         services = services,
         networks = networks,
+        quota = quota,
     )
 
     fun exposure(bind: String): Exposure = IpScope.exposureOf(bind)

@@ -5,6 +5,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -26,6 +27,8 @@ import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.model.RateUnit
 import com.vlad.ducknetview.domain.model.WifiState
 import com.vlad.ducknetview.domain.net.LinkChoice
+import com.vlad.ducknetview.domain.net.Trust
+import com.vlad.ducknetview.domain.net.NetworkTrust
 import com.vlad.ducknetview.domain.rates.Units
 import com.vlad.ducknetview.ui.UiActions
 import com.vlad.ducknetview.ui.UiState
@@ -216,6 +219,50 @@ private fun NetworkListRow(row: NetworkRow, selected: Boolean, actions: UiAction
     }
 }
 
+/**
+ * Marking a network, from the screen that names it.
+ *
+ * Here rather than in Settings because the judgement is about *this* network
+ * and the user is looking at it: a list of remembered SSIDs on a settings
+ * page is a thing to curate later, and this is a thing to answer now.
+ *
+ * A network with no stable identity — a VPN tunnel, a link with no SSID yet —
+ * offers no buttons rather than buttons that would remember the wrong thing.
+ */
+@Composable
+private fun TrustControls(row: NetworkRow, actions: UiActions) {
+    val key = NetworkTrust.keyOf(row) ?: return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            "Trust",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = {
+                actions.setNetworkTrust(
+                    key,
+                    if (row.trust == Trust.TRUSTED) Trust.UNKNOWN else Trust.TRUSTED,
+                )
+            },
+            modifier = Modifier.testTag("iface:trust"),
+        ) { Text(if (row.trust == Trust.TRUSTED) "Untrust" else "Trusted") }
+        TextButton(
+            onClick = {
+                actions.setNetworkTrust(
+                    key,
+                    if (row.trust == Trust.UNTRUSTED) Trust.UNKNOWN else Trust.UNTRUSTED,
+                )
+            },
+            modifier = Modifier.testTag("iface:distrust"),
+        ) { Text(if (row.trust == Trust.UNTRUSTED) "Clear" else "Untrusted") }
+    }
+}
+
 @Composable
 private fun NetworkDetail(
     row: NetworkRow,
@@ -235,6 +282,22 @@ private fun NetworkDetail(
                 TagBadge(if (row.metered) "metered" else "unmetered", DuckColors.Warn)
                 if (row.validated) TagBadge("validated", DuckColors.NewRow)
                 if (row.isDefault) TagBadge("default", DuckColors.Rx)
+                if (row.captivePortal) TagBadge("captive portal", DuckColors.Alert)
+                when (row.trust) {
+                    Trust.TRUSTED -> TagBadge("trusted", DuckColors.NewRow)
+                    Trust.UNTRUSTED -> TagBadge("untrusted", DuckColors.Alert)
+                    Trust.UNKNOWN -> Unit
+                }
+            }
+            if (row.captivePortal) {
+                Text(
+                    text = "A captive portal is intercepting this link. Latency, " +
+                        "external IP and name lookups measured through it describe " +
+                        "the portal, not the host they name \u2014 sign in first.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DuckColors.Alert,
+                    modifier = Modifier.testTag("iface:portal"),
+                )
             }
             KeyValueRow(
                 label = "Addresses",
@@ -242,6 +305,7 @@ private fun NetworkDetail(
             )
             KeyValueRow(label = "MTU", value = if (row.mtu > 0) row.mtu.toString() else "-")
             KeyValueRow(label = "State", value = if (row.up) "up" else "down")
+            TrustControls(row, actions)
         }
 
         SectionCard(title = "Throughput") {

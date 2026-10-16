@@ -5,9 +5,11 @@ import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.Exposure
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.domain.model.ThroughputMode
+import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.sort.Sorters
 import com.vlad.ducknetview.ui.screens.APP_SORT_COLUMNS
 import com.vlad.ducknetview.ui.screens.CONN_SORT_COLUMNS
+import com.vlad.ducknetview.ui.screens.NEIGHBOUR_SORT_COLUMNS
 import com.vlad.ducknetview.ui.screens.SERVICE_SORT_COLUMNS
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -65,6 +67,27 @@ class SortChipsSortTest {
         Fixtures.app(uid = 1, label = "zzz", connCount = 3, rxBps = 3, txBps = 3, todayRx = 3),
     )
 
+    private val neighbours = listOf(
+        NeighbourRow(
+            address = "192.168.1.10",
+            hostname = "printer",
+            rttMillis = 12,
+            lastSeen = 3_000L,
+        ),
+        NeighbourRow(
+            address = "192.168.1.2",
+            hostname = "nas",
+            rttMillis = 3,
+            lastSeen = 1_000L,
+        ),
+        NeighbourRow(
+            address = "192.168.1.9",
+            hostname = "",
+            rttMillis = -1,
+            lastSeen = 2_000L,
+        ),
+    )
+
     private val services = listOf(
         Fixtures.service(
             proto = Proto.TCP, port = 9, service = "aaa",
@@ -115,6 +138,26 @@ class SortChipsSortTest {
     }
 
     @Test
+    fun `every neighbours sort chip actually orders the table`() {
+        for (col in NEIGHBOUR_SORT_COLUMNS) {
+            assertTrue(
+                "neighbours sort chip \"$col\" reaches no comparator",
+                neighbours.sortedWith(Sorters.neighbours(col, false)) !=
+                    neighbours.sortedWith(Sorters.neighbours(col, true)),
+            )
+        }
+    }
+
+    @Test
+    fun `an unreachable host sorts last by round trip, not first`() {
+        // -1 means "no echo reply". Ordering on it raw would put every silent
+        // host at the top of the latency column, reading as the fastest hosts
+        // on the network.
+        val byRtt = neighbours.sortedWith(Sorters.neighbours("rtt", desc = false))
+        assertEquals(-1, byRtt.last().rttMillis)
+    }
+
+    @Test
     fun `every chip a screen shows is also declared in the column registry`() {
         assertTrue(
             "conns chips missing from Sorters.CONN_COLUMNS: " +
@@ -130,6 +173,11 @@ class SortChipsSortTest {
             "services chips missing from Sorters.SERVICE_COLUMNS: " +
                 (SERVICE_SORT_COLUMNS - Sorters.SERVICE_COLUMNS.toSet()),
             Sorters.SERVICE_COLUMNS.containsAll(SERVICE_SORT_COLUMNS),
+        )
+        assertTrue(
+            "neighbours chips missing from Sorters.NEIGHBOUR_COLUMNS: " +
+                (NEIGHBOUR_SORT_COLUMNS - Sorters.NEIGHBOUR_COLUMNS.toSet()),
+            Sorters.NEIGHBOUR_COLUMNS.containsAll(NEIGHBOUR_SORT_COLUMNS),
         )
     }
 

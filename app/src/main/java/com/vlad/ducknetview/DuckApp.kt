@@ -17,6 +17,7 @@ import com.vlad.ducknetview.engine.api.AppCatalog
 import com.vlad.ducknetview.engine.api.ExternalIpFetcher
 import com.vlad.ducknetview.engine.api.IcmpEchoProbe
 import com.vlad.ducknetview.engine.api.LatencyProber
+import com.vlad.ducknetview.engine.api.NeighbourScanner
 import com.vlad.ducknetview.engine.api.PortScanner
 import com.vlad.ducknetview.engine.api.UsageHistorySource
 import com.vlad.ducknetview.service.MetricsServer
@@ -74,6 +75,7 @@ class DuckApp : Application() {
             prober = prober,
             externalIp = externalIp,
             scanner = scanner,
+            neighbours = NeighbourScanner(app),
             usage = usage,
             events = eventRepo,
             closedRepo = closedRepo,

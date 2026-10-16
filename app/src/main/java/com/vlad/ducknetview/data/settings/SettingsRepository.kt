@@ -68,6 +68,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         val servicesSortDesc = booleanPreferencesKey("servicesSortDesc")
         val domainsSortCol = stringPreferencesKey("domainsSortCol")
         val domainsSortDesc = booleanPreferencesKey("domainsSortDesc")
+        val neighboursSortCol = stringPreferencesKey("neighboursSortCol")
+        val neighboursSortDesc = booleanPreferencesKey("neighboursSortDesc")
         val externalIpEnabled = booleanPreferencesKey("externalIpEnabled")
         val latencyTargets = stringPreferencesKey("latencyTargets")
         val watchlist = stringPreferencesKey("watchlist")
@@ -85,6 +87,17 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         val alertRttMs = intPreferencesKey("alertRttMs")
         val alertConnGrowthPolls = intPreferencesKey("alertConnGrowthPolls")
         val alertFanoutHosts = intPreferencesKey("alertFanoutHosts")
+        val dataCapBytes = longPreferencesKey("dataCapBytes")
+        val cycleStartDay = intPreferencesKey("cycleStartDay")
+        val quotaMobileOnly = booleanPreferencesKey("quotaMobileOnly")
+        val alertQuotaPercent = intPreferencesKey("alertQuotaPercent")
+        val alertQuotaProjected = booleanPreferencesKey("alertQuotaProjected")
+        val trustedNetworks = stringPreferencesKey("trustedNetworks")
+        val untrustedNetworks = stringPreferencesKey("untrustedNetworks")
+        val treatUnknownNetworksAsUntrusted =
+            booleanPreferencesKey("treatUnknownNetworksAsUntrusted")
+        val autoCaptureOnUntrusted = booleanPreferencesKey("autoCaptureOnUntrusted")
+        val autoScanOnUntrusted = booleanPreferencesKey("autoScanOnUntrusted")
         val alertsAckedAt = longPreferencesKey("alertsAckedAt")
         val onboardingShown = booleanPreferencesKey("onboardingShown")
     }
@@ -114,6 +127,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
             servicesSortDesc = p.bool(Keys.servicesSortDesc, d.servicesSortDesc),
             domainsSortCol = p.text(Keys.domainsSortCol, d.domainsSortCol),
             domainsSortDesc = p.bool(Keys.domainsSortDesc, d.domainsSortDesc),
+            neighboursSortCol = p.text(Keys.neighboursSortCol, d.neighboursSortCol),
+            neighboursSortDesc = p.bool(Keys.neighboursSortDesc, d.neighboursSortDesc),
             externalIpEnabled = p.bool(Keys.externalIpEnabled, d.externalIpEnabled),
             latencyTargets = p.parsed(Keys.latencyTargets, d.latencyTargets, Codec::decodeList),
             watchlist = p.parsed(Keys.watchlist, d.watchlist, Codec::decodeList),
@@ -131,6 +146,19 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
             alertRttMs = p.int(Keys.alertRttMs, d.alertRttMs),
             alertConnGrowthPolls = p.int(Keys.alertConnGrowthPolls, d.alertConnGrowthPolls),
             alertFanoutHosts = p.int(Keys.alertFanoutHosts, d.alertFanoutHosts),
+            dataCapBytes = p.long(Keys.dataCapBytes, d.dataCapBytes),
+            cycleStartDay = p.int(Keys.cycleStartDay, d.cycleStartDay),
+            quotaMobileOnly = p.bool(Keys.quotaMobileOnly, d.quotaMobileOnly),
+            alertQuotaPercent = p.int(Keys.alertQuotaPercent, d.alertQuotaPercent),
+            alertQuotaProjected = p.bool(Keys.alertQuotaProjected, d.alertQuotaProjected),
+            trustedNetworks = p.parsed(Keys.trustedNetworks, d.trustedNetworks, Codec::decodeStringSet),
+            untrustedNetworks = p.parsed(Keys.untrustedNetworks, d.untrustedNetworks, Codec::decodeStringSet),
+            treatUnknownNetworksAsUntrusted = p.bool(
+                Keys.treatUnknownNetworksAsUntrusted,
+                d.treatUnknownNetworksAsUntrusted,
+            ),
+            autoCaptureOnUntrusted = p.bool(Keys.autoCaptureOnUntrusted, d.autoCaptureOnUntrusted),
+            autoScanOnUntrusted = p.bool(Keys.autoScanOnUntrusted, d.autoScanOnUntrusted),
             alertsAckedAt = p.long(Keys.alertsAckedAt, d.alertsAckedAt),
             onboardingShown = p.bool(Keys.onboardingShown, d.onboardingShown),
         )
@@ -155,6 +183,8 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         p[Keys.servicesSortDesc] = s.servicesSortDesc
         p[Keys.domainsSortCol] = s.domainsSortCol
         p[Keys.domainsSortDesc] = s.domainsSortDesc
+        p[Keys.neighboursSortCol] = s.neighboursSortCol
+        p[Keys.neighboursSortDesc] = s.neighboursSortDesc
         p[Keys.externalIpEnabled] = s.externalIpEnabled
         p[Keys.latencyTargets] = Codec.encodeList(s.latencyTargets)
         p[Keys.watchlist] = Codec.encodeList(s.watchlist)
@@ -172,6 +202,16 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         p[Keys.alertRttMs] = s.alertRttMs
         p[Keys.alertConnGrowthPolls] = s.alertConnGrowthPolls
         p[Keys.alertFanoutHosts] = s.alertFanoutHosts
+        p[Keys.dataCapBytes] = s.dataCapBytes
+        p[Keys.cycleStartDay] = s.cycleStartDay
+        p[Keys.quotaMobileOnly] = s.quotaMobileOnly
+        p[Keys.alertQuotaPercent] = s.alertQuotaPercent
+        p[Keys.alertQuotaProjected] = s.alertQuotaProjected
+        p[Keys.trustedNetworks] = Codec.encodeStringSet(s.trustedNetworks)
+        p[Keys.untrustedNetworks] = Codec.encodeStringSet(s.untrustedNetworks)
+        p[Keys.treatUnknownNetworksAsUntrusted] = s.treatUnknownNetworksAsUntrusted
+        p[Keys.autoCaptureOnUntrusted] = s.autoCaptureOnUntrusted
+        p[Keys.autoScanOnUntrusted] = s.autoScanOnUntrusted
         p[Keys.alertsAckedAt] = s.alertsAckedAt
         p[Keys.onboardingShown] = s.onboardingShown
     }

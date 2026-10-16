@@ -44,6 +44,11 @@ object Codec {
 
     fun encodeIntSet(values: Set<Int>): String = encodeList(values.map { it.toString() })
 
+    fun encodeStringSet(values: Set<String>): String = encodeList(values.toList())
+
+    /** Never null: any token is a usable key, unlike an int set's. */
+    fun decodeStringSet(s: String): Set<String> = LinkedHashSet(decodeList(s))
+
     /** Returns null when any token is not an integer, i.e. the value is unusable. */
     fun decodeIntSet(s: String): Set<Int>? {
         val out = LinkedHashSet<Int>()

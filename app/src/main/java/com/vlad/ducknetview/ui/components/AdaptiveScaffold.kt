@@ -11,12 +11,18 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.DeviceHub
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Notifications
@@ -47,6 +53,21 @@ import com.vlad.ducknetview.ui.UiState
 private const val RAIL_MIN_WIDTH_DP = 600
 
 /**
+ * The narrowest a bottom-bar destination may get before the bar starts
+ * scrolling instead of squeezing.
+ *
+ * Material's own guidance caps a navigation bar at five items and this app
+ * has nine, which is a departure made on purpose — DESIGN §7 records that the
+ * one screen reached from somewhere other than the nav bar went unvisited by
+ * every device run until a crash in it was found by hand, so the answer to "a
+ * new screen" is not "put it in the top bar". But nine items divided across a
+ * 411 dp phone is 45 dp each, under the 48 dp minimum touch target, and on a
+ * 360 dp phone it is 40. Past that point the bar is given a fixed width and
+ * scrolls horizontally, the way the rail already scrolls vertically.
+ */
+private const val MIN_NAV_ITEM_DP = 56
+
+/**
  * Test tags: "nav:rail", "nav:bar", one "nav:<route>" per destination,
  * "badge:events" for the unacked-alert count.
  */
@@ -71,7 +92,7 @@ fun AdaptiveScaffold(
             .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
         bottomBar = {
             if (!useRail) {
-                NavigationBar(modifier = Modifier.testTag("nav:bar")) {
+                val items: @Composable RowScope.() -> Unit = {
                     Tab.entries.forEach { tab ->
                         NavigationBarItem(
                             selected = tab == current,
@@ -80,6 +101,29 @@ fun AdaptiveScaffold(
                             icon = { TabIcon(tab, state.unackedAlerts) },
                             label = { Text(tab.title) },
                             alwaysShowLabel = false,
+                        )
+                    }
+                }
+                val fits = widthDp / Tab.entries.size >= MIN_NAV_ITEM_DP
+                if (fits) {
+                    NavigationBar(modifier = Modifier.testTag("nav:bar"), content = items)
+                } else {
+                    // The bar is given a width wide enough for every
+                    // destination and scrolled, rather than hand-rolling the
+                    // item: NavigationBarItem weights itself inside its
+                    // parent, so it cannot go straight into a scrolling row
+                    // with unbounded width, but it distributes correctly
+                    // inside a bar whose width is fixed.
+                    Box(
+                        Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .testTag("nav:bar-scroll"),
+                    ) {
+                        NavigationBar(
+                            modifier = Modifier
+                                .width((Tab.entries.size * MIN_NAV_ITEM_DP).dp)
+                                .testTag("nav:bar"),
+                            content = items,
                         )
                     }
                 }
@@ -147,5 +191,6 @@ private fun iconFor(tab: Tab): ImageVector = when (tab) {
     Tab.CONNECTIONS -> Icons.Filled.SwapVert
     Tab.DOMAINS -> Icons.Filled.Language
     Tab.ROUTES -> Icons.Filled.AltRoute
+    Tab.NEIGHBOURS -> Icons.Filled.DeviceHub
     Tab.EVENTS -> Icons.Filled.Notifications
 }

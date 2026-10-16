@@ -44,6 +44,7 @@ import com.vlad.ducknetview.ui.UiState
 import com.vlad.ducknetview.ui.components.DuckFilterChip
 import com.vlad.ducknetview.ui.components.KeyValueRow
 import com.vlad.ducknetview.ui.components.SectionCard
+import com.vlad.ducknetview.ui.theme.DuckColors
 
 @Composable
 fun SettingsScreen(
@@ -173,6 +174,96 @@ fun SettingsScreen(
                 tag = "settings:broadcast",
                 onChange = { on -> actions.updateSettings { it.copy(broadcastOnAlert = on) } },
             )
+        }
+
+        SectionCard(title = "Untrusted networks", modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Mark a network trusted or untrusted on the Links screen, where it " +
+                    "is named. These decide what happens on arriving at one you do " +
+                    "not trust \u2014 the checks you would run by hand in a caf\u00e9 " +
+                    "and never remember to.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SwitchRow(
+                label = "Treat unseen networks as untrusted",
+                checked = s.treatUnknownNetworksAsUntrusted,
+                tag = "settings:treatUnknownUntrusted",
+            ) { v -> actions.updateSettings { it.copy(treatUnknownNetworksAsUntrusted = v) } }
+            SwitchRow(
+                label = "Start capture automatically",
+                checked = s.autoCaptureOnUntrusted,
+                tag = "settings:autoCaptureOnUntrusted",
+            ) { v -> actions.updateSettings { it.copy(autoCaptureOnUntrusted = v) } }
+            SwitchRow(
+                label = "Scan this device's listeners",
+                checked = s.autoScanOnUntrusted,
+                tag = "settings:autoScanOnUntrusted",
+            ) { v -> actions.updateSettings { it.copy(autoScanOnUntrusted = v) } }
+            Text(
+                "The first capture on a device still needs its consent dialog, " +
+                    "which only an open app can show \u2014 the same limit the Quick " +
+                    "Settings tile has. Until it has been granted once, arriving " +
+                    "on an untrusted network asks rather than starts.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            KeyValueRow(
+                label = "Remembered",
+                value = "${s.trustedNetworks.size} trusted · ${s.untrustedNetworks.size} untrusted",
+            )
+        }
+
+        SectionCard(title = "Data budget", modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "A monthly allowance, so the Usage screen can say whether this " +
+                    "cycle is on course rather than only what it has spent. Zero " +
+                    "turns the whole card off.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            NumberSetting(
+                label = "Allowance (MB)",
+                help = "The plan's cap. 0 disables the budget.",
+                initial = (s.dataCapBytes / MB).toString(),
+                tag = "settings:dataCap",
+                max = MAX_CAP_MB,
+            ) { v -> actions.updateSettings { it.copy(dataCapBytes = v * MB) } }
+            NumberSetting(
+                label = "Cycle starts on day",
+                help = "Day of the month the plan resets. A day past the end of a " +
+                    "short month falls on its last day.",
+                initial = s.cycleStartDay.toString(),
+                tag = "settings:cycleStartDay",
+                max = 31,
+            ) { v -> actions.updateSettings { it.copy(cycleStartDay = v.toInt().coerceIn(1, 31)) } }
+            SwitchRow(
+                label = "Count mobile data only",
+                checked = s.quotaMobileOnly,
+                tag = "settings:quotaMobileOnly",
+            ) { v -> actions.updateSettings { it.copy(quotaMobileOnly = v) } }
+            NumberSetting(
+                label = "Warn at (% of cap)",
+                help = "Fires once per 10% band past this. 0 disables the rule.",
+                initial = s.alertQuotaPercent.toString(),
+                tag = "settings:alertQuotaPercent",
+                max = 1000,
+            ) { v -> actions.updateSettings { it.copy(alertQuotaPercent = v.toInt()) } }
+            SwitchRow(
+                label = "Warn when projected over",
+                checked = s.alertQuotaProjected,
+                tag = "settings:alertQuotaProjected",
+            ) { v -> actions.updateSettings { it.copy(alertQuotaProjected = v) } }
+            if (!state.usageAccessGranted) {
+                Text(
+                    "The budget needs the system Usage Access permission to read " +
+                        "cycle totals; without it the card says so rather than " +
+                        "showing a budget of zero.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DuckColors.Warn,
+                    modifier = Modifier.testTag("settings:quota-needs-access"),
+                )
+            }
         }
 
         SectionCard(title = "Watchlist", modifier = Modifier.fillMaxWidth()) {
@@ -310,6 +401,12 @@ fun SettingsScreen(
         }
     }
 }
+
+/** Caps are written in megabytes; the model stores bytes. */
+private const val MB = 1_000_000L
+
+/** A terabyte of allowance, past which the field is refusing nonsense. */
+private const val MAX_CAP_MB = 1_000_000L
 
 @Composable
 private fun SwitchRow(

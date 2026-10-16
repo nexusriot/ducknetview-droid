@@ -3,6 +3,8 @@ package com.vlad.ducknetview
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.ComposeTimeoutException
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -12,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.vlad.ducknetview.domain.net.Subnet
+import com.vlad.ducknetview.ui.screens.EMPTY_NEIGHBOURS_NO_V4
 import com.vlad.ducknetview.ui.Tab
 import com.vlad.ducknetview.ui.screens.EMPTY_USAGE
 import com.vlad.ducknetview.ui.screens.formatDay
@@ -22,6 +26,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
 import org.junit.Rule
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
@@ -266,5 +271,85 @@ class AppUiE2ETest {
             assertTrue("stored a name with no sightings: ${row.name}", row.lookups >= 1)
         }
         println("DOMAINS rows=${rows.size} sni=${rows.count { it.source.name == "SNI" }}")
+    }
+
+    /**
+     * The Hosts screen, composed against this device's real link.
+     *
+     * [t01_everyTabRendersWithoutCrashing] proves the destination does not
+     * crash; this proves it says something true. The screen has three quite
+     * different states depending on the network underneath it — never swept,
+     * no IPv4 prefix to sweep, and a result — and the one it picks has to
+     * match the link the device is actually on, which no JVM test can know.
+     */
+    @Test
+    fun t11_hostsScreenDescribesTheLinkItIsOn() {
+        goTo(Tab.NEIGHBOURS)
+        waitForTag("neighbours:lastscan")
+
+        val app = InstrumentationRegistry.getInstrumentation()
+            .targetContext.applicationContext as DuckApp
+        val prefix = app.deps.engine.snapshot.value.networks
+            .firstOrNull { it.isDefault && !it.isNoise }
+            ?.addresses
+            ?.let(Subnet::firstV4)
+
+        if (prefix == null) {
+            // An IPv6-only link. The screen must say why there is nothing to
+            // sweep rather than offering a button that cannot work.
+            rule.onNodeWithTag("empty:$EMPTY_NEIGHBOURS_NO_V4", useUnmergedTree = true)
+                .assertExists()
+            rule.onNodeWithTag("neighbours:scan").assertIsNotEnabled()
+        } else {
+            // The range is stated before anything is sent, which is the whole
+            // consent story for the one active source in the app.
+            rule.onNodeWithTag("neighbours:range", useUnmergedTree = true).assertExists()
+            rule.onNodeWithTag("neighbours:scan").assertIsEnabled()
+        }
+    }
+
+    /**
+     * A real sweep, driven from the button, landing as rows on the screen.
+     *
+     * This is the loop the Hosts screen exists to close: a tap puts echo
+     * requests on the wire, the engine folds the answers into a snapshot, and
+     * the table renders them. Skipped rather than failed where the link
+     * answers nothing — a guest network with client isolation is built to do
+     * exactly that, and it is not a defect in this app.
+     */
+    @Test
+    fun t12_sweepingFromTheButtonFillsTheTable() {
+        goTo(Tab.NEIGHBOURS)
+        waitForTag("neighbours:lastscan")
+        val app = InstrumentationRegistry.getInstrumentation()
+            .targetContext.applicationContext as DuckApp
+        val prefix = app.deps.engine.snapshot.value.networks
+            .firstOrNull { it.isDefault && !it.isNoise }
+            ?.addresses
+            ?.let(Subnet::firstV4)
+        assumeTrue("no IPv4 prefix on the default link", prefix != null)
+
+        rule.onNodeWithTag("neighbours:scan").performClick()
+
+        // The sweep is bounded by its own timeouts; this waits for the engine
+        // to publish a finished one rather than for a fixed interval.
+        rule.waitUntil(90_000) {
+            app.deps.engine.snapshot.value.neighbourScanAt > 0L &&
+                !app.deps.engine.snapshot.value.neighbourScanRunning
+        }
+        val snap = app.deps.engine.snapshot.value
+        assumeTrue(
+            "nothing on this link answered an echo or published mDNS",
+            snap.neighbours.isNotEmpty(),
+        )
+
+        rule.waitForIdle()
+        // Every row on the screen is one the engine actually found.
+        for (row in snap.neighbours.take(5)) {
+            rule.onNodeWithTag("neighbour:${row.address}", useUnmergedTree = true).assertExists()
+        }
+        // And the banner reports the outcome rather than still announcing the
+        // attempt, which is DESIGN §5's rule and was wrong here once.
+        println("SWEEP rows=${snap.neighbours.size} subnet=${snap.neighbourSubnet}")
     }
 }

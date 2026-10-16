@@ -46,6 +46,45 @@ class AdaptiveScaffoldTest {
         }
     }
 
+    /**
+     * Nine destinations do not fit a phone's bottom bar at a usable size.
+     *
+     * 411 dp / 9 is 45 dp per item and a 360 dp phone gives 40, both under
+     * the 48 dp minimum touch target — so adding a destination is also a
+     * reachability change, and the bar scrolls past that point instead of
+     * squeezing. Moving the screen off the nav bar is not the alternative:
+     * DESIGN §7 records that the one screen reached from elsewhere went
+     * unvisited by every device run until a crash in it was found by hand.
+     */
+    @Test
+    fun aPhoneWidthScrollsTheBarRatherThanSqueezingIt() {
+        // 411dp / 9 destinations is 45dp per item and a 360dp phone gives 40,
+        // both under the 48dp minimum touch target, so adding a destination
+        // was also a reachability change. Moving the screen off the nav bar
+        // is not the alternative: DESIGN §7 records that the one screen
+        // reached from elsewhere went unvisited by every device run until a
+        // crash in it was found by hand.
+        show(widthDp = 411)
+        rule.onNodeWithTag("nav:bar-scroll").assertExists()
+        rule.onNodeWithTag("nav:bar").assertExists()
+    }
+
+    @Test
+    fun aWideEnoughBarIsNotScrolled() {
+        // One below the rail break, where nine items still clear 56dp each.
+        show(widthDp = 599)
+        rule.onNodeWithTag("nav:bar").assertExists()
+        rule.onNodeWithTag("nav:bar-scroll").assertDoesNotExist()
+    }
+
+    @Test
+    fun everyDestinationIsReachableOnAPhone() {
+        show(widthDp = 411)
+        for (tab in Tab.entries) {
+            rule.onNodeWithTag("nav:${tab.route}").assertExists()
+        }
+    }
+
     @Test
     fun expandedWidthUsesANavigationRail() {
         show(widthDp = 840)

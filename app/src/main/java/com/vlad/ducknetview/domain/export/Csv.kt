@@ -4,6 +4,7 @@ import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
+import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.model.ServiceRow
 
 /** RFC 4180 CSV. Every table exports the view the user is looking at. */
@@ -59,6 +60,7 @@ object Csv {
         listOf(
             "uid", "package", "label", "system", "conns", "rx_bps", "tx_bps",
             "session_rx", "session_tx", "today_rx", "today_tx", "remote_hosts", "blocked",
+            "blocked_attempts",
         ),
         rows.map { a ->
             listOf(
@@ -67,6 +69,19 @@ object Csv {
                 a.sessionRx.toString(), a.sessionTx.toString(),
                 a.todayRx.toString(), a.todayTx.toString(),
                 a.remoteHosts.toString(), a.blocked.toString(),
+                a.blockedAttempts.toString(),
+            )
+        },
+    )
+
+    fun neighbours(rows: List<NeighbourRow>): String = of(
+        listOf("address", "hostname", "source", "rtt_ms", "services", "gateway", "self", "last_seen"),
+        rows.map { n ->
+            listOf(
+                n.address, n.hostname, n.source.label,
+                if (n.rttMillis >= 0) n.rttMillis.toString() else "",
+                n.services.joinToString(" "),
+                n.isGateway.toString(), n.isSelf.toString(), n.lastSeen.toString(),
             )
         },
     )

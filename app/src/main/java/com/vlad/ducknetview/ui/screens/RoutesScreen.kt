@@ -245,9 +245,12 @@ private fun PlatformLimitsCard() {
         Text(
             text = "The ARP / neighbour table is not available to apps on " +
                 "Android 10 and later. /proc/net/arp is unreadable outside the " +
-                "system UID and there is no public API for it, so neighbours are " +
-                "not shown here — this is a platform limit, not a gap in the data " +
-                "collection.",
+                "system UID and there is no public API for it, so the kernel's " +
+                "own table cannot be shown here. The Hosts screen answers the " +
+                "same question the other way round, by asking the link: it " +
+                "sweeps this network for hosts that answer. That is a list of " +
+                "what replied rather than a neighbour table, and it only runs " +
+                "when you ask it to.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("routes:arpnote"),

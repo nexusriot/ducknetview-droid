@@ -138,6 +138,7 @@ object SnapshotJson {
         "mtu" to n.mtu,
         "metered" to n.metered,
         "validated" to n.validated,
+        "captivePortal" to n.captivePortal,
         "isDefault" to n.isDefault,
         "gateway" to n.gateway,
         "dnsServers" to n.dnsServers,
@@ -192,6 +193,7 @@ object SnapshotJson {
             mtu = int(m, "mtu"),
             metered = bool(m, "metered"),
             validated = bool(m, "validated"),
+            captivePortal = bool(m, "captivePortal"),
             isDefault = bool(m, "isDefault"),
             gateway = strOrNull(m, "gateway"),
             dnsServers = strings(m, "dnsServers"),
@@ -316,6 +318,7 @@ object SnapshotJson {
         "blocked" to a.blocked,
         "excludedFromVpn" to a.excludedFromVpn,
         "remoteHosts" to a.remoteHosts,
+        "blockedAttempts" to a.blockedAttempts,
     )
 
     private fun appFromMap(m: Map<String, Any?>): AppRow = AppRow(
@@ -333,6 +336,7 @@ object SnapshotJson {
         blocked = bool(m, "blocked"),
         excludedFromVpn = bool(m, "excludedFromVpn"),
         remoteHosts = int(m, "remoteHosts"),
+        blockedAttempts = long(m, "blockedAttempts"),
     )
 
     private fun serviceToMap(s: ServiceRow): Map<String, Any?> = linkedMapOf(

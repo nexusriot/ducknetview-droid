@@ -35,6 +35,8 @@ import com.vlad.ducknetview.domain.search.Search
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.domain.search.SearchResult
 import com.vlad.ducknetview.domain.model.NetSnapshot
+import com.vlad.ducknetview.domain.net.NetworkTrust
+import com.vlad.ducknetview.domain.net.Trust
 import com.vlad.ducknetview.domain.sort.Sorters
 import com.vlad.ducknetview.domain.usage.DailyUsage
 import com.vlad.ducknetview.engine.vpn.VpnBridge
@@ -201,6 +203,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Sorters.services(settings.servicesSortCol, settings.servicesSortDesc)
         )
 
+        // Found by asking the network rather than by reading a table, so it
+        // only exists after a sweep — but it goes through the same search and
+        // sort every other table does, which is what TablePipelineTest is for.
+        val neighboursSearched = Search.apply(
+            snap.neighbours,
+            matcher,
+            settings.searchMode,
+        ) { n -> listOf(n.address, n.hostname) + n.services }
+        val neighbours = neighboursSearched.items.sortedWith(
+            Sorters.neighbours(settings.neighboursSortCol, settings.neighboursSortDesc)
+        )
+
         val visibleEvents = liveEvents.filter {
             when (eventFilter) {
                 EventLevelFilter.ALL -> true
@@ -226,6 +240,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Tab.APPS -> appsSearched
             Tab.SERVICES -> servicesSearched
             Tab.DOMAINS -> domainsSearched
+            Tab.NEIGHBOURS -> neighboursSearched
             Tab.EVENTS -> eventsSearched
             else -> null
         }
@@ -244,6 +259,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             apps = apps,
             services = services,
             domains = domains,
+            neighbours = neighbours,
             events = eventsSearched.items,
             eventFilter = eventFilter,
             unackedAlerts = liveEvents.count {
@@ -290,6 +306,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
                 if (running && statusFlow.value in VPN_START_MESSAGES) status("capture running")
             }
         }
+        watchUntrustedNetworks()
         deps.engine.start()
     }
 
@@ -445,6 +462,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             "domains" ->
                 if (s.domainsSortCol == column) s.copy(domainsSortDesc = !s.domainsSortDesc)
                 else s.copy(domainsSortCol = column, domainsSortDesc = true)
+
+            "neighbours" ->
+                if (s.neighboursSortCol == column) s.copy(neighboursSortDesc = !s.neighboursSortDesc)
+                else s.copy(neighboursSortCol = column, neighboursSortDesc = false)
             else -> s
         }
     }
@@ -507,6 +528,71 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         status("scanning this device")
         deps.engine.scanServices { rows ->
             status("scan found ${rows.size} listening ${plural(rows.size, "port")}")
+        }
+    }
+
+    override fun scanNeighbours() {
+        status("sweeping this link for other hosts")
+        // DESIGN §5: the banner says what happened, not what was attempted.
+        // Left as "sweeping …" it sat there for the rest of the session
+        // describing work that had finished a minute earlier — the same
+        // defect as the old "requesting VPN permission" message.
+        deps.engine.scanNeighbours { rows, subnet ->
+            status(
+                when {
+                    subnet.isEmpty() -> "no IPv4 prefix on this link to sweep"
+                    rows.isEmpty() -> "nothing on $subnet answered"
+                    else -> "${rows.size} ${plural(rows.size, "host")} answered on $subnet"
+                }
+            )
+        }
+    }
+
+    override fun setNetworkTrust(key: String, trust: Trust) {
+        edit { NetworkTrust.apply(it, key, trust) }
+        status(
+            when (trust) {
+                Trust.TRUSTED -> "$key marked trusted"
+                Trust.UNTRUSTED -> "$key marked untrusted"
+                Trust.UNKNOWN -> "$key no longer marked"
+            }
+        )
+    }
+
+    /**
+     * Act on arriving at a network the user does not trust.
+     *
+     * Both responses are the ones a careful person would run by hand on a
+     * café network and never remembers to: turn on the capture that makes
+     * per-connection accounting possible, and check what this device is
+     * exposing to the people on it.
+     *
+     * Keyed on the snapshot's own verdict, so it cannot disagree with the
+     * event the log writes. Once per link rather than once per poll — the
+     * condition stands for as long as you are on the network, and re-running
+     * a port scan every two seconds would be its own kind of misbehaviour.
+     *
+     * Capture is only *requested*: the first activation needs a consent
+     * dialog an Activity has to show, so on a device that has never granted
+     * it this does what the Quick Settings tile does and waits for the user.
+     */
+    private fun watchUntrustedNetworks() {
+        viewModelScope.launch {
+            var actedOn: String? = null
+            combine(deps.engine.snapshot, deps.settings.settings) { snap, s -> snap to s }
+                .collect { (snap, s) ->
+                    if (!snap.untrustedDefault || snap.frozen) {
+                        actedOn = null
+                        return@collect
+                    }
+                    val link = snap.networks.firstOrNull { it.isDefault && !it.isNoise }
+                        ?: return@collect
+                    val key = NetworkTrust.keyOf(link) ?: return@collect
+                    if (actedOn == key) return@collect
+                    actedOn = key
+                    if (s.autoCaptureOnUntrusted && !VpnBridge.running.value) startVpn()
+                    if (s.autoScanOnUntrusted) scanServices()
+                }
         }
     }
 
@@ -590,6 +676,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             Tab.APPS -> Csv.apps(s.apps)
             Tab.SERVICES -> Csv.services(s.services)
             Tab.DOMAINS -> Csv.domains(s.domains)
+            Tab.NEIGHBOURS -> Csv.neighbours(s.neighbours)
             Tab.EVENTS -> Csv.events(s.events)
             else -> null
         }

@@ -2,15 +2,19 @@ package com.vlad.ducknetview
 
 import android.content.Context
 import android.net.VpnService
+import android.os.Process
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.vlad.ducknetview.domain.model.DomainRow
+import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.engine.vpn.DuckVpnService
 import com.vlad.ducknetview.engine.vpn.PingSockets
 import com.vlad.ducknetview.engine.vpn.VpnBridge
 import com.vlad.ducknetview.engine.vpn.packet.Icmp
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -22,6 +26,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.runners.MethodSorters
 import java.io.BufferedReader
+import com.vlad.ducknetview.testing.QuicPackets
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -277,6 +284,224 @@ class VpnCaptureE2ETest {
         )
     }
 
+
+    /**
+     * A name learnt from a QUIC handshake **split across two datagrams**.
+     *
+     * This is the test that was missing. The first build of [QuicPeek] read
+     * only a flow's opening datagram, having inherited `TlsPeek`'s refusal to
+     * reassemble, and it passed every JVM test — because those build the
+     * hellos they then read, and a hello this app builds fits in one packet.
+     * A real one does not: a modern ClientHello carries a post-quantum key
+     * share and spans two Initials, so on the M10 the shipped code produced
+     * dozens of `udp/443` flows labelled `quic` and a name for none of them.
+     *
+     * Two Initials are put on the wire as another app's traffic would be,
+     * carrying one ClientHello between them, and the assertion is at the far
+     * end of the whole path: peek, [VpnBridge], the poll tick's batch, Room.
+     */
+    @Test
+    fun t10_aNameIsLearntFromASplitQuicHandshake() {
+        val app = context.applicationContext as DuckApp
+        val host = "split-hello.quic.test"
+        runBlocking { app.deps.domainRepo.clear() }
+
+        val hello = QuicPackets.clientHello(host)
+        val cut = hello.size / 2
+        sendQuic(
+            QuicPackets.initialCarrying(hello.copyOfRange(0, cut), 0L),
+            QuicPackets.initialCarrying(hello.copyOfRange(cut, hello.size), cut.toLong()),
+        )
+
+        var stored = emptyList<String>()
+        waitUntil(30_000) {
+            stored = runBlocking { app.deps.domainRepo.recent.first() }.map { it.name }
+            stored.any { it == host }
+        }
+        assertTrue(
+            "the name never arrived from a split QUIC hello; stored instead: $stored",
+            stored.any { it == host },
+        )
+    }
+
+    /**
+     * The same path for a hello that does fit one datagram, so a regression
+     * in the assembler cannot hide behind the split case passing.
+     */
+    @Test
+    fun t11_aNameIsLearntFromASingleDatagramQuicHandshake() {
+        val app = context.applicationContext as DuckApp
+        val host = "one-packet.quic.test"
+        runBlocking { app.deps.domainRepo.clear() }
+
+        sendQuic(QuicPackets.initial(sni = host))
+
+        var stored = emptyList<String>()
+        waitUntil(30_000) {
+            stored = runBlocking { app.deps.domainRepo.recent.first() }.map { it.name }
+            stored.any { it == host }
+        }
+        assertTrue(
+            "the name never arrived from a single-datagram QUIC hello; " +
+                "stored instead: $stored",
+            stored.any { it == host },
+        )
+    }
+
+    /**
+     * A QUIC name is labelled as one.
+     *
+     * The source is what the Domains screen renders and what the info sheet
+     * promises, and `NameSource` is a field with a default — the class of
+     * bug `DomainEventsLabelledTest` exists for. Reading it back out of
+     * storage is the only check that the label survives the whole path.
+     */
+    @Test
+    fun t12_aQuicNameIsRecordedWithTheQuicSource() {
+        val app = context.applicationContext as DuckApp
+        val host = "labelled.quic.test"
+        runBlocking { app.deps.domainRepo.clear() }
+
+        sendQuic(QuicPackets.initial(sni = host))
+
+        var row: DomainRow? = null
+        waitUntil(30_000) {
+            row = runBlocking { app.deps.domainRepo.recent.first() }
+                .firstOrNull { it.name == host }
+            row != null
+        }
+        assertNotNull("the QUIC name was never stored", row)
+        assertEquals(
+            "a name read out of a QUIC Initial must say so, not borrow SNI's label",
+            NameSource.QUIC,
+            row!!.source,
+        )
+    }
+
+
+    /**
+     * Blocking an app produces evidence that it is blocked.
+     *
+     * The firewall is the one thing this app *does* to traffic rather than
+     * watching it, and it used to do it in total silence: the flow was
+     * refused, marked and retired, and because a blocked app has no live
+     * connections by construction the Apps screen showed it exactly as it
+     * shows an app that is not running. There was no way to tell a working
+     * block from a broken one — the same honesty failure as the `paused`
+     * flag in DESIGN §8a.
+     *
+     * Driven through the real setting rather than by poking
+     * [VpnBridge.setBlocked], so the propagation from DataStore to the packet
+     * path is part of what is tested, and the refusal is counted onto the
+     * very [com.vlad.ducknetview.domain.model.AppRow] the screen renders.
+     */
+    @Test
+    fun t13_aBlockedAppsRefusalsAreCounted() {
+        val app = context.applicationContext as DuckApp
+        val uid = Process.myUid()
+        val before = blockedAttemptsFor(uid)
+        runBlocking { app.deps.settings.update { it.copy(blockedUids = it.blockedUids + uid) } }
+        try {
+            // The engine applies settings on its own cadence; the block is
+            // not in force until the packet path has been told.
+            waitUntil(10_000) { VpnBridge.isBlocked(uid) }
+            assumeTrue("the block never reached the capture engine", VpnBridge.isBlocked(uid))
+
+            // Each of these is refused rather than relayed, so none of them
+            // is expected to succeed — the refusal is the subject.
+            repeat(4) { fetch("https://connectivitycheck.gstatic.com/generate_204") }
+
+            waitUntil(30_000) { blockedAttemptsFor(uid) > before }
+            assertTrue(
+                "the firewall refused connections and counted none of them; " +
+                    "a blocked app would look identical to an idle one",
+                blockedAttemptsFor(uid) > before,
+            )
+        } finally {
+            runBlocking {
+                app.deps.settings.update { it.copy(blockedUids = it.blockedUids - uid) }
+            }
+            waitUntil(10_000) { !VpnBridge.isBlocked(uid) }
+        }
+    }
+
+    /**
+     * A blocked app stays on the Apps screen.
+     *
+     * It has no flows by construction, so listing only uids that carried a
+     * packet dropped it from the screen entirely — taking the only control
+     * that could unblock it with it.
+     */
+    @Test
+    fun t14_aBlockedAppIsStillListed() {
+        val app = context.applicationContext as DuckApp
+        val uid = Process.myUid()
+        runBlocking { app.deps.settings.update { it.copy(blockedUids = it.blockedUids + uid) } }
+        try {
+            waitUntil(15_000) {
+                app.deps.engine.snapshot.value.apps.any { it.uid == uid && it.blocked }
+            }
+            val row = app.deps.engine.snapshot.value.apps.firstOrNull { it.uid == uid }
+            assertNotNull("the blocked app vanished from the Apps screen", row)
+            assertTrue("its row does not say it is blocked", row!!.blocked)
+        } finally {
+            runBlocking {
+                app.deps.settings.update { it.copy(blockedUids = it.blockedUids - uid) }
+            }
+        }
+    }
+
+    private fun blockedAttemptsFor(uid: Int): Long {
+        val app = context.applicationContext as DuckApp
+        return app.deps.engine.snapshot.value.apps
+            .firstOrNull { it.uid == uid }
+            ?.blockedAttempts
+            ?: 0L
+    }
+
+    /**
+     * Send datagrams into the TUN exactly as another app would.
+     *
+     * The socket is deliberately *not* protected: unprotected traffic from
+     * this process is what the engine is meant to capture, which is the whole
+     * point of `VpnBridge.captureOwnTraffic`. Nothing is expected to answer —
+     * only the outbound path is under test, and a handshake to a host that
+     * never replies is exactly what the peek has to cope with anyway.
+     */
+    private fun sendQuic(vararg datagrams: ByteArray) {
+        val target = InetSocketAddress(InetAddress.getByName(quicTarget()), 443)
+        DatagramSocket().use { socket ->
+            for (bytes in datagrams) {
+                runCatching { socket.send(DatagramPacket(bytes, bytes.size, target)) }
+                Thread.sleep(50)
+            }
+            // The relay reads the datagram on its own coroutine; returning
+            // before it has run would close the socket under the flow.
+            Thread.sleep(500)
+        }
+    }
+
+    /**
+     * A host that really does listen on UDP/443.
+     *
+     * Not the gateway, which was the obvious choice and was wrong: a host
+     * with nothing on that port answers **ICMP port unreachable**, the
+     * relay's connected upstream socket throws, and the flow is torn down —
+     * taking its half-assembled ClientHello with it. The split-hello test
+     * then saw its second Initial arrive on a brand new flow with a brand
+     * new assembler and no offset zero, and failed for a reason that had
+     * nothing to do with the code under test.
+     *
+     * That is a real property of the engine and not only of the test: a
+     * handshake interrupted by an ICMP error loses whatever had been
+     * collected. It is recorded in `QuicPeek`, and it is not worth engineering
+     * around, because a browser's QUIC handshake goes to a host that is
+     * listening by construction — which is exactly what this now uses.
+     */
+    private fun quicTarget(): String = runCatching {
+        InetAddress.getByName(QUIC_HOST).hostAddress
+    }.getOrNull() ?: "192.0.2.1"
+
     /**
      * The default gateway when it is an IPv4 address: one LAN hop is far more
      * likely to answer an echo than a public resolver on a filtered network.
@@ -347,4 +572,9 @@ class VpnCaptureE2ETest {
             conn.disconnect()
         }
     }.getOrDefault(-1)
+
+    private companion object {
+        /** Serves HTTP/3, so it listens on UDP/443 and answers no ICMP error. */
+        const val QUIC_HOST = "www.cloudflare.com"
+    }
 }

@@ -1,5 +1,6 @@
 package com.vlad.ducknetview.ui.screens
 
+import com.vlad.ducknetview.domain.net.Trust
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.Capabilities
@@ -262,6 +263,8 @@ class RecordingActions(initial: AppSettings = AppSettings()) : UiActions {
     var startVpnCount = 0
     var stopVpnCount = 0
     var scanCount = 0
+    var neighbourScanCount = 0
+    var lastTrust: Pair<String, Trust>? = null
     var exportTableCount = 0
     var exportEventsCount = 0
     var exportJsonCount = 0
@@ -301,6 +304,8 @@ class RecordingActions(initial: AppSettings = AppSettings()) : UiActions {
     override fun stopVpn() { stopVpnCount++; rec("stopVpn") }
 
     override fun scanServices() { scanCount++; rec("scanServices") }
+    override fun scanNeighbours() { neighbourScanCount++; rec("scanNeighbours") }
+    override fun setNetworkTrust(key: String, trust: Trust) { lastTrust = key to trust; rec("setNetworkTrust") }
     override fun setScanFullRange(full: Boolean) { lastScanFullRange = full; rec("setScanFullRange") }
     override fun saveBaseline() = rec("saveBaseline")
     override fun clearBaseline() = rec("clearBaseline")

@@ -10,6 +10,7 @@ import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.model.Scope
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.net.IpScope
+import com.vlad.ducknetview.domain.net.Trust
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 
 /**
@@ -39,6 +40,12 @@ class EventEngine(
     private val knownLinks = LinkedHashMap<String, NetworkRow>()
     private val missingTicks = HashMap<String, Int>()
 
+    /** Links currently reported as behind a captive portal, by [linkKey]. */
+    private val portalLinks = LinkedHashSet<String>()
+
+    /** The link the untrusted-network line was last written for. */
+    private var untrustedReported: String? = null
+
     /**
      * Public addresses first seen during the most recent [diff]. The caller
      * persists these so "first contact" survives a process restart; the set
@@ -66,6 +73,7 @@ class EventEngine(
         serviceEvents(prev, cur, baseline, rec)
         connEvents(cur, watchlist, rec)
         networkEvents(prev, cur, rec)
+        untrustedEvent(cur, rec)
         return rec.finish()
     }
 
@@ -75,6 +83,7 @@ class EventEngine(
         seenWatched.clear()
         reportedOffBaseline.clear()
         newHosts.clear()
+        untrustedReported = null
     }
 
     private fun serviceEvents(
@@ -205,13 +214,59 @@ class EventEngine(
      * same link". The id remains the key for byte counters, where a fresh
      * registration really does restart from zero.
      */
+    /**
+     * The default link being one the user does not trust.
+     *
+     * Unlike everything in [networkEvents] this fires on the first snapshot
+     * too, and deliberately. The topology events are about a *change* — a
+     * link appearing is only news against a previous list — but this is a
+     * standing property of where the device is right now, and opening the app
+     * on a network you marked untrusted is exactly the moment the log should
+     * say so. It is also the line that explains the automatic capture or scan
+     * that [NetSnapshot.untrustedDefault] has just triggered, so staying
+     * silent on the first tick would leave those unexplained.
+     *
+     * Once per link: a standing condition reported every two seconds is not a
+     * log, and the same key coming back after a different network is a real
+     * second arrival.
+     */
+    private fun untrustedEvent(cur: NetSnapshot, rec: Recorder) {
+        if (!cur.untrustedDefault) {
+            untrustedReported = null
+            return
+        }
+        val def = cur.networks.firstOrNull { it.isDefault && !it.isNoise } ?: return
+        val key = linkKey(def)
+        if (untrustedReported == key) return
+        untrustedReported = key
+        rec.add(
+            EventLevel.WARN,
+            EventKind.NETWORK_UNTRUSTED,
+            label(def),
+            detail(
+                when (def.trust) {
+                    Trust.UNTRUSTED -> "marked untrusted"
+                    else -> "never seen before, and unknown networks are treated as untrusted"
+                },
+                "this device's exposure on it is worth checking",
+            ),
+        )
+    }
+
     private fun linkKey(n: NetworkRow): String =
         if (n.ifaceName.isNotEmpty()) "${n.transport}/${n.ifaceName}" else "id/${n.id}"
 
     private fun networkEvents(prev: NetSnapshot?, cur: NetSnapshot, rec: Recorder) {
         // The first snapshot is the baseline, not a burst of "network appeared".
+        // A portal already in place is seeded rather than announced for the
+        // same reason, but it *is* seeded: otherwise the sign-in that follows
+        // has nothing to clear and goes unreported too.
         if (prev == null) {
-            for (n in cur.networks) knownLinks[linkKey(n)] = n
+            for (n in cur.networks) {
+                val key = linkKey(n)
+                knownLinks[key] = n
+                if (n.captivePortal) portalLinks += key
+            }
             return
         }
 
@@ -245,6 +300,7 @@ class EventEngine(
                     }
                 }
             }
+            captivePortalEvent(key, n, rec)
             knownLinks[key] = n
         }
 
@@ -264,7 +320,58 @@ class EventEngine(
             if (strikes < DOWN_CONFIRM_POLLS) continue
             val gone = knownLinks.remove(key) ?: continue
             missingTicks.remove(key)
+            // Rejoining the same captive network later is news again.
+            portalLinks.remove(key)
             rec.add(EventLevel.WARN, EventKind.NETWORK_DOWN, label(gone), "vanished")
+        }
+    }
+
+    /**
+     * A captive portal is the one link condition that invalidates every other
+     * reading on the screen at once: latency, external IP, reverse DNS and the
+     * webhook are all answered by the portal rather than by the host they name.
+     * It has its own kind rather than a line in [changes] for that reason — it
+     * is not another property that moved, it is a reason to distrust the rest.
+     *
+     * Keyed on what was last *reported*, not on the previous row, and the two
+     * directions are deliberately asymmetric.
+     *
+     * `onAvailable` fires before `onCapabilitiesChanged`, so a re-registering
+     * link is published for one rebuild carrying no capabilities at all: no
+     * portal flag, and no validation either. Comparing adjacent rows would
+     * read the first half of that as a sign-in the user never performed — the
+     * same fabrication as the Wi-Fi outages in `NetworkIdentityTest` — and
+     * would then have nothing left to compare against when the real sign-in
+     * arrived, swallowing it. Requiring [NetworkRow.validated] to call a
+     * portal cleared closes both ends: a capability gap does not validate, so
+     * it neither reports nor consumes the transition.
+     *
+     * Like [knownLinks], this is link topology rather than a per-session
+     * dedupe, so [reset] does not clear it; a link that genuinely vanishes
+     * does, because rejoining the same captive network is news again.
+     */
+    private fun captivePortalEvent(key: String, cur: NetworkRow, rec: Recorder) {
+        val reported = key in portalLinks
+        if (cur.captivePortal) {
+            if (reported) return
+            portalLinks += key
+            rec.add(
+                EventLevel.WARN,
+                EventKind.CAPTIVE_PORTAL,
+                label(cur),
+                detail(
+                    "sign-in required",
+                    "traffic on this link is intercepted until the portal is satisfied",
+                ),
+            )
+        } else if (reported && cur.validated) {
+            portalLinks -= key
+            rec.add(
+                EventLevel.INFO,
+                EventKind.CAPTIVE_PORTAL,
+                label(cur),
+                "portal cleared \u2014 the link validates again",
+            )
         }
     }
 

@@ -8,6 +8,7 @@ import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.RateUnit
 import com.vlad.ducknetview.domain.rates.Units
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 
 /**
  * Thresholds turn the app from something you watch into something that tells
@@ -24,6 +25,16 @@ class AlertRules(
     private var prevConnCounts = LinkedHashMap<Int, Int>()
     private val knownHosts = LinkedHashMap<Int, LinkedHashSet<String>>()
 
+    /**
+     * Budget reporting, scoped to the cycle rather than to a clock window.
+     * [quotaCycleStart] is the cycle these two describe; when it moves, they
+     * reset, which is how the first poll of a new month is allowed to speak
+     * again.
+     */
+    private var quotaCycleStart = Long.MIN_VALUE
+    private var quotaBandReported = -1
+    private var quotaProjectionReported = false
+
     fun evaluate(cur: NetSnapshot, s: AppSettings, nowMillis: Long): List<Event> {
         val out = ArrayList<Event>()
 
@@ -32,6 +43,7 @@ class AlertRules(
         if (s.alertRttMs > 0) rtt(cur, s.alertRttMs, nowMillis, out)
         if (s.alertConnGrowthPolls > 0) connGrowth(cur, s.alertConnGrowthPolls, nowMillis, out)
         if (s.alertFanoutHosts > 0) fanout(cur, s.alertFanoutHosts, nowMillis, out)
+        quota(cur, s, nowMillis, out)
 
         // Pruning runs unconditionally. Hanging it off one rule's path means a
         // device with only the other rules enabled never prunes at all.
@@ -52,6 +64,9 @@ class AlertRules(
         growth.clear()
         prevConnCounts = LinkedHashMap()
         knownHosts.clear()
+        quotaCycleStart = Long.MIN_VALUE
+        quotaBandReported = -1
+        quotaProjectionReported = false
     }
 
     /** Visible for tests: how many suppression entries are being held. */
@@ -183,6 +198,70 @@ class AlertRules(
         }
     }
 
+    /**
+     * The budget, in the two shapes that are worth being told about.
+     *
+     * A percentage breach is the fact; the projection is the warning that
+     * arrives while there is still time to act on it, which is the whole
+     * reason a cap is worth tracking rather than reporting at the end of the
+     * month.
+     *
+     * Neither uses [shouldFire], and that is the point. Every other rule here
+     * watches a subject that goes away — a connection closes, a burst ends —
+     * so a cooldown is enough. A cap sat on top of stays breached for the
+     * rest of the cycle, and [pruneFired] drops a cooldown entry two windows
+     * after it was set, so a time-based suppression would fall silent for two
+     * minutes and then start again, every two minutes, until the cycle rolled
+     * over. The state here is scoped to the cycle instead: the highest band
+     * already reported, reset when the cycle does.
+     */
+    private fun quota(cur: NetSnapshot, s: AppSettings, now: Long, out: MutableList<Event>) {
+        val q = cur.quota
+        if (!q.configured) {
+            quotaCycleStart = Long.MIN_VALUE
+            return
+        }
+        if (q.cycleStartDay != quotaCycleStart) {
+            quotaCycleStart = q.cycleStartDay
+            quotaBandReported = -1
+            quotaProjectionReported = false
+        }
+
+        if (s.alertQuotaPercent > 0 && q.percentUsedExact >= s.alertQuotaPercent) {
+            val band = q.percentUsedExact / BAND_PERCENT
+            if (band > quotaBandReported) {
+                quotaBandReported = band
+                out += Event(
+                    at = now,
+                    level = if (q.overBudget) EventLevel.ALERT else EventLevel.WARN,
+                    kind = EventKind.QUOTA_PERCENT,
+                    subject = scope(q),
+                    detail = "${q.percentUsedExact}% of " + Units.bytes(q.capBytes) +
+                        " used · " + Units.bytes(q.remainingBytes) + " left with " +
+                        "${q.daysRemaining} ${if (q.daysRemaining == 1) "day" else "days"} " +
+                        "of the cycle to go",
+                )
+            }
+        }
+
+        if (s.alertQuotaProjected && q.projectedOver && !q.overBudget && !quotaProjectionReported) {
+            quotaProjectionReported = true
+            out += Event(
+                at = now,
+                level = EventLevel.WARN,
+                kind = EventKind.QUOTA_PROJECTED,
+                subject = scope(q),
+                detail = "at " + Units.bytes(q.bytesPerDay) + "/day this cycle ends at " +
+                    Units.bytes(q.projectedBytes) + ", over the " +
+                    Units.bytes(q.capBytes) + " cap · " +
+                    Units.bytes(q.safeDailyRemaining) + "/day would stay inside it",
+            )
+        }
+    }
+
+    private fun scope(q: QuotaStatus): String =
+        if (q.mobileOnly) "mobile data budget" else "data budget"
+
     private fun shouldFire(key: String, now: Long): Boolean {
         val last = firedAt[key]
         if (last != null && now - last < refireMillis) return false
@@ -226,5 +305,12 @@ class AlertRules(
 
         /** Remote hosts remembered per app for the fan-out rule. */
         const val HOSTS_PER_APP = 4096
+
+        /**
+         * Width of a quota reporting band, in percent. One line per 10% of
+         * the cap: enough to notice the climb, few enough that a cycle
+         * produces a handful of lines rather than one per poll.
+         */
+        const val BAND_PERCENT = 10
     }
 }

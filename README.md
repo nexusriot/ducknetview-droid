@@ -32,9 +32,9 @@ that cannot account for sockets.
 
 ## Screens
 
-Eight navigation destinations —
-`Overview · Links · Services · Apps · Conns · Domains · Routes · Events` — plus
-**Usage** and **Settings**, reached from the top bar.
+Nine navigation destinations —
+`Overview · Links · Services · Apps · Conns · Domains · Routes · Hosts · Events`
+— plus **Usage** and **Settings**, reached from the top bar.
 
 - **Overview** — security summary (exposed / public / watchlist / off-baseline,
   each tappable through to the filtered screen), gateway and DNS, path latency
@@ -44,13 +44,20 @@ Eight navigation destinations —
   TCP handshake where it does not; each reading says which, because the two are
   not the same measurement.
 - **Links** — per-network detail, Wi-Fi dBm with a plain-language rating, link
-  speeds, band and standard; hide-noise filter.
+  speeds, band and standard; hide-noise filter. A **captive portal** is flagged
+  here and in the log, because every other reading taken through such a link —
+  latency, external IP, reverse DNS, the webhook — is answered by the portal
+  rather than by the host it names. Each network can also be marked **trusted
+  or untrusted**, keyed on its SSID rather than on `wlan0`.
 - **Services** — Android forbids enumerating other apps' listeners, so this
   **scans the device itself** (loopback + each local address). Same baseline
   semantics as the TUI: save, accept-one, clear, and off-baseline alerts.
-- **Apps** — per-UID rows with connection counts, throughput, today's usage.
-  CPU%/memory% of other processes is unavailable on Android and is omitted
-  rather than faked.
+- **Apps** — per-UID rows with connection counts, throughput, today's usage,
+  and — for a blocked app — how many connections the firewall has refused.
+  That counter exists because a blocked app has no live connections *by
+  construction*, so without it the screen showed a working block exactly as it
+  shows an app that is not running. CPU%/memory% of other processes is
+  unavailable on Android and is omitted rather than faked.
 - **Conns** — the flagship: live flows with per-connection bytes, RTT, age,
   scope colouring, watchlist highlighting, quick filters, reverse DNS,
   group-by-host, and closed-connection history. **ICMP echo is relayed too**,
@@ -60,17 +67,39 @@ Eight navigation destinations —
   of ICMP is not relayed and the screen says so: replies such as Time Exceeded
   arrive on a socket error queue no public API can read.
 - **Domains** — every name this device asked for, who asked, how often, and
-  what it resolved to. Two sources, and each row says which: **DNS** answers
-  read off the TUN, and **TLS SNI** for the connections where no DNS answer was
-  visible. That second source is what keeps the screen useful at all on a
-  device with Private DNS switched on — the default on most modern Android —
-  where lookups are encrypted and the app sees none of them. The screen says
-  that in so many words rather than showing an empty table. This is not TLS
-  interception: SNI is sent in the clear before any key exchange, nothing is
-  decrypted, and the handshake is relayed byte for byte either way.
+  what it resolved to. Three sources, and each row says which: **DNS** answers
+  read off the TUN, **TLS SNI** where no DNS answer was visible, and the
+  ClientHello inside a **QUIC Initial** where the handshake is not TLS at all.
+  The second keeps the screen useful on a device with Private DNS switched on
+  — the default on most modern Android. The third closes what was the real
+  blind spot: a browser page load is entirely UDP/443, producing no DNS answer
+  and no TLS record, so the majority of a modern phone's traffic left this
+  screen empty. QUIC Initial packets are protected with keys derived from a
+  salt **published in RFC 9001** and the connection id the client sends in the
+  clear, so no secret takes part and anyone on the path can read the name —
+  the protection is there to stop middleboxes freezing the wire format, not to
+  keep the contents private. Only a connection's opening Initial packets are
+  read, under hard caps, and the buffer is dropped as soon as the handshake
+  moves on: a modern ClientHello carries a post-quantum key share and does not
+  fit one packet, so reading just the first one found a name for none of the
+  QUIC flows on the test tablet.
+  None of this is TLS interception: every name here is sent in the clear
+  before any key exchange, nothing that needs a secret is decrypted, no
+  certificate is substituted, and the bytes are relayed unchanged either way.
 - **Routes** — every simultaneously-active network's routes and DNS. The
-  ARP/neighbour table is **not available on Android 10+** and the screen says
-  so rather than leaving a silent gap.
+  kernel's ARP/neighbour table is **not available on Android 10+**; the screen
+  says so and points at Hosts, which answers the question the other way round.
+- **Hosts** — other devices on this link. Android has not exposed the
+  neighbour table to apps since version 10, so this asks the network instead:
+  an **ICMP echo** to each address in the link's own IPv4 prefix through the
+  same unprivileged ping socket the gateway probe uses, plus **mDNS** through
+  the system's NSD daemon for names and device types. It is the only active
+  source in the app, so it has a button and never refreshes itself, it sweeps
+  only the device's own on-link prefix, and it skips the broadcast address.
+  **This is a list of what answered, not a census** — a host that filters ICMP
+  and publishes no mDNS is on the network and not on this screen, and a guest
+  network is built so that nothing answers at all. The screen says that rather
+  than showing an empty table and implying the network is empty.
 - **Events** — the change log: services appearing, vanishing and *moving*
   (an exposure-widening move is an alert), watchlist hits, first contact with
   a new public host, network changes, threshold breaches.
@@ -78,7 +107,13 @@ Eight navigation destinations —
   busiest day called out, per-day drill-down, and top apps / hosts over 7, 30
   or all retained days (40 days, top 50 apps and hosts per day). Per-app
   history needs the system Usage Access permission; the screen asks for it and
-  still shows device-level history without it.
+  still shows device-level history without it. With a **data budget**
+  configured it also answers the question a metered plan actually raises —
+  *am I going to run out* — with the cycle's usage and the cycle's elapsed time
+  as two bars, the projection at the current rate, and the date the allowance
+  runs out if that rate holds. Cycle totals are read live from
+  `NetworkStatsManager` rather than summed from the rollup, so a cap written
+  against mobile data is measured against mobile data.
 - **Settings** — capture toggle, refresh interval and units, alert thresholds,
   watchlist and latency-target editors, the metrics endpoint, snapshots, and
   exports.
@@ -129,6 +164,26 @@ hosts at once (a scan), off-baseline listeners, watchlist hits. Delivery is a
 notification, an optional webhook POST, and an optional broadcast Intent —
 the Android equivalents of the TUI's `--on-alert` hook. Nothing runs a shell.
 
+Two budget rules work differently and deliberately so: **% of cap** and
+**projected over cap** are suppressed per *billing cycle* rather than on a
+clock. Every other rule watches a subject that goes away; a cap sat on top of
+stays breached for the rest of the month, so a time-based cooldown would fall
+silent and then start again every couple of minutes until the cycle rolled
+over. The percentage rule fires once per 10% band, so climbing from 80% to 95%
+is two lines and sitting at 85% for three weeks is none.
+
+Refused connections are logged too, as INFO rather than a warning — the user
+asked for the block, so a refusal is the feature working, and anything louder
+would notify on every retry of an app they have already dealt with. One line
+per app per minute carries the count since the last one.
+
+Arriving on a network marked **untrusted** (or, optionally, one never seen
+before) is logged, and can automatically start capture and scan this device's
+own listeners — the checks worth running on a café network and the ones
+nobody remembers. The first capture on a device still needs its consent
+dialog, which only an open app can show, so until that has been granted once
+the arrival asks rather than starts.
+
 ## Background jobs
 
 Two WorkManager jobs are what make the app useful while nobody is looking:
@@ -170,7 +225,7 @@ points at an SDK with **platform 35** and **platform-tools** installed. Writing
 `sdk.dir=/path/to/Sdk` into `local.properties` works too; the environment
 variable is preferred because it does not tempt anyone to commit the file.
 
-1242 unit tests and 27 instrumented tests; see **Running the tests** and
+1480 unit tests and 44 instrumented tests; see **Running the tests** and
 **Test on a device**.
 
 ## Test on a device
@@ -191,20 +246,28 @@ failure that is not a real failure — a debug APK built on another machine cann
 upgrade the installed one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so the script
 removes the stale package and retries rather than stopping.
 
-Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 27
-instrumented test methods; **25 do real work on a default run**, and the
+Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 44
+instrumented test methods; **42 do real work on a default run**, and the
 remaining two skip unless given their arguments. The ICMP case skips as well on
 a kernel that does not permit unprivileged ping sockets, which is a
 configuration (`net.ipv4.ping_group_range`) rather than a guarantee.
 
 | Suite | Tests | Notes |
 |---|---|---|
-| `VpnCaptureE2ETest` | 9 | turns on capture, makes real requests, asserts flows appear with correct byte counters, RTT and UID attribution; pings through the TUN; proves a name learnt from a TLS handshake reaches storage |
-| `AppUiE2ETest` | 10 | drives the real app through every screen with the live engine, Room and DataStore behind it |
+| `VpnCaptureE2ETest` | 14 | turns on capture, makes real requests, asserts flows appear with correct byte counters, RTT and UID attribution; pings through the TUN; proves names learnt from a TLS handshake **and from a QUIC Initial split across two datagrams** reach storage with the right source; blocks this app's own uid and asserts the refusals are counted |
+| `AppUiE2ETest` | 12 | drives the real app through every screen with the live engine, Room and DataStore behind it, including a real LAN sweep driven from the Hosts screen's own button |
+| `NeighbourSweepDeviceTest` | 8 | sweeps this device's real link and checks every row credits a source its own fields support |
 | `UsageMigrationDeviceTest` | 5 | runs the `daily_usage` schema migration on the device's own SQLite |
 | `CaptureToUiE2ETest` | 2 | closes the loop: packets off the TUN become flows, flows become a snapshot, the snapshot renders as rows |
 | `MetricsEndpointDeviceTest` | 1 (+1 opt-in) | enables the setting and scrapes the endpoint over a real socket; `-e holdSeconds N` holds it open for an external scrape |
 | `CaptureBenchmarkTest` | opt-in | needs `-e benchUrl`; see **Capture cost** |
+
+`NeighbourSweepDeviceTest` starts an Activity before anything else, and has a
+case whose only job is to assert that it worked. Its first version did not,
+so the engine never ran, every case skipped on "no IPv4 prefix on the default
+link" — and the runner printed `OK (7 tests)` for a suite that had done
+nothing. An assumption that is always violated looks exactly like a passing
+test.
 
 Two of `AppUiE2ETest`'s cases exist because the suite used to drive only the
 seven *navigation* destinations. **Usage** is reached from the top bar instead,
@@ -305,9 +368,12 @@ Enable it in Settings and the app serves Prometheus text on the LAN:
 curl http://<device-ip>:9187/metrics
 ```
 
-**43 metric families** (all gauges, all prefixed `ducknetview_`) covering
+**49 metric families** (all gauges, all prefixed `ducknetview_`) covering
 throughput, per-network counters, connections by scope, listeners by exposure,
-off-baseline count, watchlist hits, latency, per-app / per-host series, and the
+off-baseline count, watchlist hits, latency, per-app / per-host series, refused
+connections per app, the data budget (cap, used, projected, days left — emitted
+only when one is configured, since a budget of zero scraped as a real series
+reads as an exhausted allowance on any dashboard that divides by it), and the
 truncation gauge below. The sample count varies with how many networks, apps and
 hosts are present — an idle tablet scraped over the LAN served 46 samples in
 7.6 kB. `PrometheusTest` pins the family count so this number cannot drift again.
@@ -400,7 +466,9 @@ normal path) is what the OEM manager permits.
 
 - **Retransmit counts** have no unprivileged source; the column is hidden
   rather than approximated.
-- **ARP/neighbour table** is unavailable on Android 10+.
+- **ARP/neighbour table** is unavailable on Android 10+. The Hosts screen
+  answers the question by active sweep instead, which finds only hosts that
+  answer an echo or publish mDNS, and only on IPv4.
 - **CPU%/memory% per app** is unavailable for other processes.
 - The **Quick Settings tile cannot show the VPN consent dialog** (no tile can),
   so the first activation hands off to the app.

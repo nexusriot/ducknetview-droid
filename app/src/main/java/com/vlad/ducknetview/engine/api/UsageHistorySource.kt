@@ -152,6 +152,46 @@ class UsageHistorySource(context: Context) {
         }
     }
 
+    /**
+     * Bytes used between [startMillis] and now, for the budget card.
+     *
+     * Queried live rather than summed out of the daily rollup, for two
+     * reasons. `NetworkStatsManager` reports cumulative totals over any range
+     * in one call, so this is the authoritative figure rather than a
+     * reconstruction; and the rollup stores one total per day across every
+     * transport, which cannot answer a cap written against mobile data —
+     * which is what essentially every cap is written against.
+     *
+     * Returns null when the permission is missing, which the card renders as
+     * "needs Usage Access" rather than as a budget of zero.
+     */
+    suspend fun cycleTotal(
+        startMillis: Long,
+        mobileOnly: Boolean,
+    ): Long? = withContext(Dispatchers.IO) {
+        val manager = nsm ?: return@withContext null
+        val now = System.currentTimeMillis()
+        if (startMillis >= now) return@withContext 0L
+        @Suppress("DEPRECATION")
+        val types = if (mobileOnly) {
+            intArrayOf(ConnectivityManager.TYPE_MOBILE)
+        } else {
+            NETWORK_TYPES
+        }
+        var total = 0L
+        var answered = false
+        for (type in types) {
+            val bucket = deviceSummary(manager, type, startMillis, now) ?: continue
+            answered = true
+            total += bucket.rxBytes + bucket.txBytes
+        }
+        if (answered) total else null
+    }
+
+    /** Local midnight of the day number [day], for a cycle-start query. */
+    fun startOfDay(day: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
+        LocalDate.ofEpochDay(day).atStartOfDay(zone).toInstant().toEpochMilli()
+
     private fun summary(
         manager: NetworkStatsManager,
         type: Int,

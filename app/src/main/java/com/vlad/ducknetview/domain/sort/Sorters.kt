@@ -5,6 +5,7 @@ import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Scope
+import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.model.ThroughputMode
 import com.vlad.ducknetview.ui.HostGroup
@@ -26,6 +27,7 @@ object Sorters {
     val APP_COLUMNS = listOf("conns", "rx", "tx", "name", "today")
     val SERVICE_COLUMNS = listOf("proto", "port", "service", "exposure", "seen")
     val DOMAIN_COLUMNS = listOf("name", "lookups", "seen", "app")
+    val NEIGHBOUR_COLUMNS = listOf("address", "name", "rtt", "seen")
     val CLOSED_COLUMNS = listOf("closedAt", "lifetime", "rx", "tx")
     val GROUP_COLUMNS = listOf("conns", "host", "bytes")
 
@@ -123,6 +125,35 @@ object Sorters {
         }
         return ordered(primary, desc, tie)
     }
+
+    fun neighbours(col: String, desc: Boolean): Comparator<NeighbourRow> {
+        val tie = Comparator<NeighbourRow> { a, b -> addressOrder(a.address).compareTo(addressOrder(b.address)) }
+        val primary: Comparator<NeighbourRow>? = when (col) {
+            "address" -> tie
+            "name" -> Comparator { a, b -> text(a.hostname, b.hostname) }
+            // An unanswered RTT sorts last ascending rather than first: -1 is
+            // "no reading", and putting it at the top of a latency column
+            // reads as the fastest host on the network.
+            "rtt" -> Comparator { a, b -> rttOrder(a.rttMillis).compareTo(rttOrder(b.rttMillis)) }
+            "seen" -> Comparator { a, b -> a.lastSeen.compareTo(b.lastSeen) }
+            else -> null
+        }
+        return ordered(primary, desc, tie)
+    }
+
+    /** 192.168.1.9 before 192.168.1.10, which a text sort gets backwards. */
+    private fun addressOrder(address: String): Long {
+        var v = 0L
+        val parts = address.split('.')
+        if (parts.size != 4) return Long.MAX_VALUE
+        for (part in parts) {
+            val n = part.toLongOrNull() ?: return Long.MAX_VALUE
+            v = (v shl 8) or (n and 0xFF)
+        }
+        return v
+    }
+
+    private fun rttOrder(ms: Int): Int = if (ms < 0) Int.MAX_VALUE else ms
 
     /**
      * Closed rows carry final counters rather than rates, so the throughput

@@ -177,6 +177,8 @@ class NetworkInfoSource(context: Context) {
                 !nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
             validated = nc != null &&
                 nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+            captivePortal = nc != null &&
+                nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL),
             isDefault = isDefault,
             gateway = gatewayOf(routes),
             dnsServers = lp?.dnsServers?.mapNotNull { hostText(it) } ?: emptyList(),

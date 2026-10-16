@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.vlad.ducknetview.domain.rates.Units
 import com.vlad.ducknetview.domain.usage.DailyUsage
 import com.vlad.ducknetview.domain.usage.UsageRollup
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 import com.vlad.ducknetview.ui.UiActions
 import com.vlad.ducknetview.ui.UiState
 import com.vlad.ducknetview.ui.components.BarChart
@@ -112,6 +113,12 @@ fun UsageScreen(
 
         if (!state.usageAccessGranted) {
             UsageAccessCard(actions)
+        }
+
+        // Above the history on purpose: "will I run out" is the question, and
+        // the chart below is the evidence for it.
+        if (state.snapshot.quota.configured && !state.snapshot.frozen) {
+            BudgetCard(state.snapshot.quota)
         }
 
         if (state.usageLoading) {
@@ -205,6 +212,81 @@ fun UsageScreen(
                 onDismiss = { selectedDay = null },
             )
         }
+    }
+}
+
+/**
+ * The cycle against its cap.
+ *
+ * Two bars rather than one: how much of the allowance has gone, and how much
+ * of the cycle has. A single bar at 60% means nothing without knowing whether
+ * the month is a third or three-quarters done, and the gap between the two is
+ * the whole answer.
+ */
+@Composable
+private fun BudgetCard(q: QuotaStatus) {
+    val over = q.overBudget
+    val warn = over || q.projectedOver
+    SectionCard(
+        title = if (q.mobileOnly) "Mobile data budget" else "Data budget",
+        modifier = Modifier.fillMaxWidth().testTag("usage:budget"),
+    ) {
+        Text(
+            text = "${Units.bytes(q.usedBytes)} of ${Units.bytes(q.capBytes)} " +
+                "· ${q.percentUsedExact}%",
+            style = MaterialTheme.typography.titleMedium,
+            color = if (warn) DuckColors.Alert else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.testTag("usage:budget-used"),
+        )
+        LinearProgressIndicator(
+            progress = { q.percentUsed / 100f },
+            modifier = Modifier.fillMaxWidth().testTag("usage:budget-bar"),
+            color = if (warn) DuckColors.Alert else DuckColors.Rx,
+        )
+        Text(
+            text = "Cycle ${q.percentOfCycleElapsed}% elapsed · day ${q.daysElapsed} " +
+                "of ${q.cycleDays}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        LinearProgressIndicator(
+            progress = { q.percentOfCycleElapsed / 100f },
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.outline,
+        )
+        KeyValueRow(
+            label = "At this rate",
+            value = "${Units.bytes(q.bytesPerDay)}/day → ${Units.bytes(q.projectedBytes)} " +
+                "by the end of the cycle",
+        )
+        KeyValueRow(
+            label = if (over) "Over by" else "Left",
+            value = if (over) {
+                Units.bytes(q.usedBytes - q.capBytes)
+            } else {
+                "${Units.bytes(q.remainingBytes)} · ${Units.bytes(q.safeDailyRemaining)}/day " +
+                    "for the remaining ${q.daysRemaining}"
+            },
+        )
+        val exhausted = q.exhaustedOnDay
+        if (exhausted != null && !over) {
+            Text(
+                text = "At this rate the allowance runs out on " +
+                    formatDay(exhausted) + ", before the cycle ends.",
+                style = MaterialTheme.typography.bodySmall,
+                color = DuckColors.Warn,
+                modifier = Modifier.testTag("usage:budget-exhausted"),
+            )
+        }
+        Text(
+            text = if (q.mobileOnly) {
+                "Mobile transports only, read from the system's own accounting."
+            } else {
+                "Every transport, read from the system's own accounting."
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

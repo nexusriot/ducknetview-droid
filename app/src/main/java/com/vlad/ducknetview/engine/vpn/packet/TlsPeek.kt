@@ -60,9 +60,31 @@ object TlsPeek {
         val recordEnd = r.position + recordLength
         if (recordEnd > end) return null // hello continues in a later segment
 
+        return clientHelloServerName(r, recordEnd)
+    }
+
+    /**
+     * The SNI host out of a bare ClientHello *handshake message* — type byte,
+     * three-length length, body — with no TLS record wrapper around it.
+     *
+     * Split out because QUIC carries the same message with no record layer at
+     * all: `QuicPeek` reassembles it out of CRYPTO frames and hands it here.
+     * One parser, deliberately. Two copies of a hand-written walk over
+     * attacker-supplied bytes is two bounds-checking surfaces that drift, and
+     * the second one is the one nobody re-reads.
+     *
+     * @param limit one past the last byte the caller vouches for.
+     */
+    fun clientHelloServerName(buf: ByteArray, offset: Int, length: Int): String? {
+        val end = offset + minOf(length, buf.size - offset)
+        if (end <= offset) return null
+        return clientHelloServerName(Reader(buf, offset, end), end)
+    }
+
+    private fun clientHelloServerName(r: Reader, limit: Int): String? {
         if (r.u8() != HANDSHAKE_CLIENT_HELLO) return null
         val helloLength = r.u24() ?: return null
-        if (r.position + helloLength > recordEnd) return null
+        if (r.position + helloLength > limit) return null
 
         r.skip(2) // client version
         r.skip(32) // random
@@ -72,7 +94,7 @@ object TlsPeek {
 
         val extensionsLength = r.u16() ?: return null
         val extensionsEnd = r.position + extensionsLength
-        if (extensionsEnd > recordEnd) return null
+        if (extensionsEnd > limit) return null
 
         while (r.position + 4 <= extensionsEnd) {
             val type = r.u16() ?: return null

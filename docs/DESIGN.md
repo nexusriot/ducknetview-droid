@@ -43,12 +43,12 @@ active engine can actually answer, and the UI keys off it.
 | Ports tab (enumerate listeners) | forbidden for other apps | **self port-scan** of loopback + each local address, with the TUI's baseline semantics intact |
 | Processes tab | other processes are hidden | **per-UID Apps screen**; CPU%/memory% omitted, not faked |
 | Kill process | own process only | per-app **VPN firewall block**, exclude-from-VPN, App-Info deep link |
-| ARP/neighbour table | unavailable on Android 10+ | the Routes screen says so explicitly |
+| ARP/neighbour table | unavailable on Android 10+ | **Hosts screen**: an opt-in ICMP sweep of the link's own prefix plus mDNS for names. The Routes screen still states the platform limit and points at it |
 | Retransmit counts | no unprivileged source | column hidden; approximation deliberately parked |
 | ICMP (ping) | no raw sockets | **echo relayed through a Linux ping socket**; the rest of ICMP is not reachable |
-| Resolver activity | other apps' DNS is invisible | **names read off the TUN**: DNS answers, and TLS SNI where the resolver is encrypted |
+| Resolver activity | other apps' DNS is invisible | **names read off the TUN**: DNS answers, TLS SNI where the resolver is encrypted, and the ClientHello inside a QUIC Initial where the handshake is not TLS at all |
 | `--on-alert` shell hook | no shell | notification + optional webhook POST + broadcast Intent |
-| `--metrics` textfile | no cron | embedded HTTP endpoint, 43 gauge families |
+| `--metrics` textfile | no cron | embedded HTTP endpoint, 49 gauge families |
 | `--from snapshot` | — | SAF picker → frozen UI, reads the TUI's own JSON |
 
 UDP is skipped by the self-scan: it is not reliably detectable by connect-probing.
@@ -95,6 +95,156 @@ labelled rather than blended, because they measure different things: a TCP
 handshake also pays for the peer's accept path. A target the user wrote as
 `host:port` is never answered with an echo — naming a port is naming a question
 about that port.
+
+**QUIC Initial packets are read, and that is still not interception.** SNI
+kept the connection table legible on a device with Private DNS, and then
+measured use showed where it stops: a browser page load is entirely UDP/443,
+so there is no DNS answer and no TLS record anywhere in it. The Domains
+screen — the whole point of which is to name what the device talks to — was
+empty for the majority of a modern phone's traffic, and the info sheet said so
+in as many words because there was nothing else to say.
+
+There is now. RFC 9001 §5.2 protects Initial packets with keys derived by HKDF
+from a **salt published in the RFC** and the Destination Connection ID the
+client sends in the clear in the same packet. No secret takes part. The
+protection exists to stop middleboxes ossifying the wire format, not to keep
+the contents private, and anyone on the path can undo it. So the line drawn
+for SNI holds unchanged: one field is read, it is a name, it is sent before
+any key exchange, no key is touched, no certificate is substituted, and the
+datagram is relayed byte for byte either way. Only the first datagram of a
+flow is looked at, only when five bytes of header say it is an Initial of a
+version this build knows, and nothing after the Initial is readable or read.
+
+Three things fall out of the implementation worth recording. `TlsPeek`'s
+ClientHello walk is now shared rather than copied — QUIC carries the same
+handshake message with no record layer, and two hand-written walks over
+attacker-supplied bytes are two bounds-checking surfaces that drift, with the
+second being the one nobody re-reads. The test strategy is split on purpose:
+the key schedule is pinned against the RFC's own worked example, and only the
+framing is round-tripped. An implementation that derived keys its own
+self-consistent way would encrypt and decrypt its own test packets perfectly
+and read nothing a browser ever sent, so the normative vector is the part that
+cannot be replaced by a round trip.
+
+**And the first version did not work at all, which only the device showed.**
+`TlsPeek` declines to reassemble a ClientHello split across TCP segments,
+because there it is rare and buffering attacker-controlled bytes for a
+cosmetic label is not a trade worth making. That reasoning was carried
+straight over and it does not transfer: a modern ClientHello carries a
+post-quantum key share and does not fit in one Initial packet, so for QUIC a
+split hello is not the rare case but the ordinary one. On the M10 the first
+build produced dozens of `udp/443` flows labelled `quic` in the connection
+table and a name for **not one of them**, while every TCP/TLS flow beside
+them was labelled correctly — a feature that passed its unit tests, shipped,
+and did nothing. The unit tests could not have caught it: they built the
+hellos they then read, and a hello this app builds fits in one packet.
+
+The suite now carries that case: `VpnCaptureE2ETest` puts two Initials on the
+wire with one ClientHello between them and asserts the name reaches Room. It
+had to be pointed at a host that is actually listening on UDP/443 — aimed at
+the gateway, the ICMP port-unreachable tore the relay's upstream socket down
+between the two datagrams, the flow went with it, and the second Initial
+arrived on a fresh assembler with no offset zero. That is a real property of
+the engine rather than an artefact of the test, and it is recorded where the
+assembler lives.
+
+`QuicPeek.Assembler` now holds CRYPTO data across a flow's first few
+datagrams under hard caps — four Initials, 16 KiB, sixty-four outstanding
+ranges — and is dropped the moment the hello completes, a limit is passed, or
+the flow sends anything that is not an Initial. Received data is tracked as
+merged ranges rather than a high-water mark, because a client may send the
+tail of its hello before the head and a mark forgets the tail was ever there.
+Both of those bounds and the out-of-order case are pinned by tests that
+failed against the first implementation. Re-measured on the device: twenty
+names, `blog.cloudflare.com` and `www.google.com` among them, each attributed
+to Chrome and labelled QUIC.
+
+**The firewall now leaves evidence.** Blocking an app refused the flow, marked
+it and retired it, and that was the whole story: no event, no counter, no
+gauge. Because a blocked app has no live connections *by construction*, the
+Apps screen showed it exactly as it shows an app that is not running — so
+there was no way to tell a working block from a broken one, which is the same
+honesty failure as the `paused` flag in §8a. Refusals are now observed on the
+packet path, buffered for the poll tick the way DNS answers are (a blocked app
+retries hard enough that anything more than an append would be felt there),
+counted per app onto `AppRow.blockedAttempts`, and summarised in the log.
+
+The summary matters as much as the record. One line per refusal would bury
+everything else within a minute, so `BlockedEvents` emits once per app per
+minute carrying the count accumulated since the last line — and the first
+refusal is reported immediately, because the user has just pressed Block and
+is watching. The level is INFO, deliberately: they asked for this, so a
+refusal is the feature working, and WARN would put a notification and a
+webhook POST behind every retry of an app they have already dealt with.
+
+**Three event kinds existed that nothing could ever emit.** `CAPTIVE_PORTAL`,
+`ENGINE_STARTED`, `ENGINE_STOPPED` and `ENGINE_REVOKED` were declared,
+filtered on, and present in the CSV vocabulary, and no line anywhere
+constructed one. `ENGINE_REVOKED` is the worst of them: Android permits a
+single VPN, so another app connecting ends this one's capture with no error
+and no tick — the one externally caused failure the app cannot prevent was
+also the one it never mentioned. All four have producers now, and
+`arch/EventKindsProducedTest` is the generalisation of `UiActionsWiredTest`
+and `BridgeFieldsWrittenTest` to the third vocabulary the app publishes.
+
+Two details in those producers are load-bearing. The lifecycle events come
+from **one** collector on `VpnBridge.running` rather than two, because
+`reportRevoked` sets its flag before detaching: by the time `running` goes
+false the reason is already known, and collecting both flows would report a
+revocation as a revocation *and* a stop. And the captive-portal producer is
+keyed on what was last *reported* rather than on the previous row, with
+clearing additionally requiring the link to validate — `onAvailable` fires
+before `onCapabilitiesChanged`, so a re-registering link is published for one
+rebuild carrying no capabilities at all, and comparing adjacent rows would
+announce a sign-in the user never performed and then have nothing left to
+compare against when the real one arrived.
+
+**The neighbour sweep is the app's only active source, and is treated as
+such.** Every other screen watches traffic that was happening anyway; this one
+sends packets to hosts the user did not name. It therefore has a button and no
+automatic refresh, it sweeps the device's own on-link IPv4 prefix and nothing
+else — no typed range, no routed network, nothing wider than a /22 — and it
+skips the broadcast address, which is the one probe on the list that would
+reach hosts nobody asked about. A prefix too wide returns **no** list rather
+than a truncated one, because a partial sweep presented as a finished one is
+the silent shortfall this project treats as a defect.
+
+Names come from `NsdManager` rather than from a socket of ours, which buys
+three things at once: no multicast permission, no multicast lock, and — while
+capture is on — no traversal of our own TUN. IPv6 is refused outright and the
+screen says why: an on-link prefix there is a /64, so there is no list to walk
+at all. The screen also states, in place of an empty table, that this is a
+list of what *answered* — a host filtering ICMP and publishing no mDNS is on
+the network and not on the screen, and a guest network is built so that
+nothing answers.
+
+**The budget's suppression is scoped to the cycle, not to a clock.** Every
+other rule in `AlertRules` watches a subject that goes away — a connection
+closes, a burst ends — so a cooldown plus `pruneFired` is enough. A cap sat on
+top of stays breached for the rest of the month, and pruning drops the
+cooldown entry two windows after it was set: the rule would fall silent for
+two minutes and then fire again, every two minutes, until the cycle rolled
+over. A test written for that property caught it. The state is now the highest
+*band* already reported and the cycle it belongs to, reset when the cycle
+moves, so a climb from 80% to 95% is two lines and sitting at 85% for three
+weeks is none.
+
+The projection is deliberately the simplest possible model — mean rate so far,
+extended across the whole cycle. A weekday/weekend split or a trend fit would
+be a better forecast on some devices and a worse one on others, and neither
+can be explained in the line the card has room for. "At this rate" is a claim
+the reader can check.
+
+**Network trust is computed once, on the snapshot.** The verdict is a function
+of a link and the user's settings, and two consumers need it: the event that
+says "you have arrived somewhere you do not trust" and the automatic responses
+that start capture and scan this device's listeners. Deriving it twice is how
+the log ends up explaining an action that did not happen, or staying silent
+about one that did, so the assembler computes `untrustedDefault` and both read
+that. The per-network key is the SSID and not the interface — `wlan0` is
+`wlan0` on every Wi-Fi network there has ever been, so keying trust on it
+would mark every network at once — and not the platform netId either, for the
+reason §8a records.
 
 **SNI is read; nothing is decrypted.** The connection table labelled rows from
 DNS answers crossing the TUN, which is dead code on any device with Private DNS
@@ -278,6 +428,36 @@ and HIGHLIGHT search mode computed match ranges that no screen rendered.
 member has a caller in `ui/` or `MainActivity`. Reflection proves a method
 exists; only a source scan proves something invokes it.
 
+### 8b. A green suite that tested nothing
+
+The device suite ran 29 tests against a release of this app in which four
+features were new, and passed — because not one of those tests touched any of
+them. Hand-driving the device found three defects in an hour, two of which
+(QUIC naming no flows at all, a source label contradicting the name beside
+it) were in code the unit tests covered thoroughly. The lesson is narrower
+than "write device tests": the unit tests were not weak, they were *closed* —
+`QuicPeekTest` builds the hellos it then reads, and a hello this app builds
+fits in one packet, so the suite could not have discovered that a real one
+does not.
+
+The follow-up had its own version of the same trap. The first
+`NeighbourSweepDeviceTest` read the engine's snapshot without starting an
+Activity, so the engine never ran, every case skipped on a violated
+assumption, and `am instrument` reported `OK (7 tests)`. A suite that skips
+is reported exactly like a suite that passes. It now opens with a case whose
+only job is to fail when the setup did not work.
+
+A fifth was found by writing the guard for it rather than by a device run.
+`arch/EventKindsProducedTest` asserts every `EventKind` constant is
+constructed somewhere in `main/` outside the UI that renders it, and it found
+**four** orphans at once: `CAPTIVE_PORTAL` and the three engine-lifecycle
+kinds. They are the same class as `openSnapshot` and `AppRow.todayRx` applied
+to the third vocabulary the app publishes to the user, and the compiler cannot
+see it — an enum constant nothing constructs is legal, and an exhaustive
+`when` over it in the renderer makes it look thoroughly wired. The rule the
+guard encodes: declaring a kind is a promise the app can report it, and a kind
+with no source on Android belongs left out, the way retransmit counts are.
+
 A fourth turned up on the device, and the guard does not cover it because it is
 not a `UiActions` member: **`AppRow.todayRx` / `todayTx` were read in six places
 — the Apps row, its detail sheet, the `today` sort column, the CSV and the JSON
@@ -351,5 +531,7 @@ daemon.
 "TLS interception" means exactly that: decrypting, substituting a certificate,
 or touching a key. Reading the cleartext `server_name` a client sends before
 any key exchange is not that, and §5 records why it is in and where its line
-sits. In-app traceroute is also out, for the reason recorded there — the ICMP
+sits. The same holds for the name in a QUIC Initial: its protection is derived
+entirely from a salt printed in RFC 9001 and a connection id sent in the
+clear, so removing it needs no secret and gives nothing a key would. In-app traceroute is also out, for the reason recorded there — the ICMP
 errors it needs cannot be read through any public API.

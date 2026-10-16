@@ -9,7 +9,9 @@ import com.vlad.ducknetview.domain.model.Capabilities
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventLevelFilter
 import com.vlad.ducknetview.domain.model.IpVersionFilter
+import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.model.NetSnapshot
+import com.vlad.ducknetview.domain.net.Trust
 import com.vlad.ducknetview.domain.model.ProtoFilter
 import com.vlad.ducknetview.domain.model.SearchMode
 import com.vlad.ducknetview.domain.model.ServiceRow
@@ -17,13 +19,19 @@ import com.vlad.ducknetview.domain.model.StateFilter
 import com.vlad.ducknetview.domain.usage.DailyUsage
 
 /**
- * The navigation destinations: the TUI's seven tabs, plus Domains.
+ * The navigation destinations: the TUI's seven tabs, plus Domains and Hosts.
  *
  * Domains has no counterpart in the TUI — a Linux host reads names out of its
  * own resolver, while here they are a by-product of owning the TUN. It is a
  * navigation destination rather than a top-bar overlay on purpose: the one
  * screen that lived behind the top bar went unvisited by every device test
  * until a crash in it was found by hand.
+ *
+ * Hosts has no TUI counterpart either, and for the opposite reason: a Linux
+ * host reads its neighbours out of the kernel's own table, which Android has
+ * not exposed since 10. It is the only screen here whose data comes from the
+ * app putting packets on the wire, so it is also the only one that does
+ * nothing at all until the user asks it to.
  */
 enum class Tab(val route: String, val title: String) {
     OVERVIEW("overview", "Overview"),
@@ -33,6 +41,7 @@ enum class Tab(val route: String, val title: String) {
     CONNECTIONS("connections", "Conns"),
     DOMAINS("domains", "Domains"),
     ROUTES("routes", "Routes"),
+    NEIGHBOURS("neighbours", "Hosts"),
     EVENTS("events", "Events"),
     ;
 
@@ -81,6 +90,7 @@ data class UiState(
     val apps: List<AppRow> = emptyList(),
     val services: List<ServiceRow> = emptyList(),
     val domains: List<DomainRow> = emptyList(),
+    val neighbours: List<NeighbourRow> = emptyList(),
     val events: List<Event> = emptyList(),
     val eventFilter: EventLevelFilter = EventLevelFilter.ALL,
     val unackedAlerts: Int = 0,
@@ -146,6 +156,9 @@ interface UiActions {
     fun toggleShowClosed()
     fun selectNetwork(id: String)
 
+    /** Mark a network trusted, untrusted, or neither, by its stable key. */
+    fun setNetworkTrust(key: String, trust: Trust)
+
     fun setSearch(query: String)
     fun toggleSearchMode()
     fun clearSearch()
@@ -167,6 +180,9 @@ interface UiActions {
     fun stopVpn()
 
     fun scanServices()
+
+    /** Sweep the current link for other hosts: the Hosts screen's one control. */
+    fun scanNeighbours()
     fun setScanFullRange(full: Boolean)
     fun saveBaseline()
     fun clearBaseline()

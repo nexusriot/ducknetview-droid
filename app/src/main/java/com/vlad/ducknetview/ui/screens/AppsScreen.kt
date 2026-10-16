@@ -291,7 +291,14 @@ private fun AppRowItem(
             )
             if (app.blocked) {
                 Text(
-                    "blocked",
+                    // A bare "blocked" says the setting is on; the count says
+                    // the block is doing something, which is the part the
+                    // screen could not answer at all before.
+                    if (app.blockedAttempts > 0) {
+                        "blocked · ${app.blockedAttempts} refused"
+                    } else {
+                        "blocked"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = DuckColors.Alert,
                     modifier = Modifier.testTag("app:blocked:${app.uid}"),
@@ -350,6 +357,12 @@ private fun appDetailLines(app: AppRow, state: UiState): List<Pair<String, Strin
         lines += "Today" to Units.bytes(app.todayRx + app.todayTx)
     }
     lines += "Blocked" to if (app.blocked) "yes" else "no"
+    // Shown whenever there is a number, not only while the block is on: an
+    // app unblocked a minute ago still has a refusal count worth reading, and
+    // hiding it would make the figure look like it had been reset.
+    if (app.blockedAttempts > 0) {
+        lines += "Connections refused" to app.blockedAttempts.toString()
+    }
     lines += "Excluded from VPN" to if (app.excludedFromVpn) "yes" else "no"
     return lines
 }

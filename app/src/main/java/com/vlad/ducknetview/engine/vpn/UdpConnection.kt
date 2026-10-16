@@ -2,6 +2,7 @@ package com.vlad.ducknetview.engine.vpn
 
 import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.engine.vpn.packet.Packets
+import com.vlad.ducknetview.engine.vpn.packet.QuicPeek
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,11 +43,26 @@ class UdpConnection(
     private val protect: (DatagramSocket) -> Boolean,
     private val scope: CoroutineScope,
     private val onDnsPayload: (ByteArray) -> Unit,
+    private val onSni: (String) -> Unit,
     private val onClosed: (FlowKey) -> Unit,
 ) {
     private val key = flow.key
     private var channel: DatagramChannel? = null
     private var readJob: Job? = null
+
+    /**
+     * Collects a ClientHello out of this flow's Initial packets, or null once
+     * there is nothing left to collect.
+     *
+     * A modern ClientHello carries a post-quantum key share and does not fit
+     * one Initial, so a single-datagram peek found a name for none of the
+     * QUIC flows on the test tablet. The assembler is created only if the
+     * flow's first datagram looks like an Initial and is dropped the moment
+     * it is finished, so a flow that is not QUIC pays five bytes of
+     * comparison once and nothing after that.
+     */
+    private var quic: QuicPeek.Assembler? = null
+    private var quicChecked = false
 
     @Volatile private var closed = false
 
@@ -84,9 +100,32 @@ class UdpConnection(
             ch.write(ByteBuffer.wrap(buf, offset, length))
             // The DNS peek keeps the payload past this call, so it gets a copy.
             if (key.dstPort == DNS_PORT) onDnsPayload(buf.copyOfRange(offset, offset + length))
+            // QUIC is gated on the packet's own shape rather than on port
+            // 443, because the protocol is not bound to a port and the gate
+            // is five bytes of comparison either way.
+            peekQuic(buf, offset, length)
         } catch (e: Exception) {
             close()
         }
+    }
+
+    /**
+     * Offer one outbound datagram to the QUIC handshake reader.
+     *
+     * The assembler is started only by a first datagram that looks like an
+     * Initial: a flow that opens with anything else is never QUIC's
+     * handshake and is marked off for good.
+     */
+    private fun peekQuic(buf: ByteArray, offset: Int, length: Int) {
+        val assembler = quic ?: run {
+            if (quicChecked) return
+            quicChecked = true
+            if (!QuicPeek.looksLikeInitial(buf, offset, length)) return
+            QuicPeek.Assembler().also { quic = it }
+        }
+        val name = assembler.offer(buf, offset, length)
+        if (name != null) onSni(name)
+        if (assembler.done) quic = null
     }
 
     private suspend fun pumpReads(ch: DatagramChannel) {

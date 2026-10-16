@@ -1,5 +1,6 @@
 package com.vlad.ducknetview.ui
 
+import com.vlad.ducknetview.domain.net.Trust
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.Capabilities
 import com.vlad.ducknetview.domain.model.CellularState
@@ -229,6 +230,8 @@ class FakeActions : UiActions {
     override fun stopVpn() = record("stopVpn")
 
     override fun scanServices() = record("scanServices")
+    override fun scanNeighbours() = record("scanNeighbours")
+    override fun setNetworkTrust(key: String, trust: Trust) = record("setNetworkTrust", "$key=$trust")
     override fun setScanFullRange(full: Boolean) = record("setScanFullRange", full)
     override fun saveBaseline() = record("saveBaseline")
     override fun clearBaseline() = record("clearBaseline")

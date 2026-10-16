@@ -93,6 +93,32 @@ class SnapshotAssemblerTest {
     }
 
     /**
+     * `AppRow.blockedAttempts` is read by the Apps row, its detail sheet, the
+     * CSV export and two Prometheus gauges. DESIGN §8 records what happens to
+     * a field in that position with no producer: `todayRx` was read in six
+     * places, written in none, and reported a flat 0 B for every app on the
+     * device while the engine fetched the real numbers and threw them away.
+     * "Compiles and has a default" is exactly what hides the absence.
+     */
+    @Test
+    fun `the refusal count reaches the app row`() {
+        val settings = AppSettings(blockedUids = setOf(10135))
+        assembler.setBlockedAttempts(mapOf(10135 to 7L))
+        val snap = tick(1_000L, flows = FlowTable(), settings = settings)
+        val row = snap.apps.firstOrNull { it.uid == 10135 }
+        assertTrue("the blocked app is not on the screen at all", row != null)
+        assertEquals(7L, row!!.blockedAttempts)
+    }
+
+    @Test
+    fun `an app with no refusals reports zero rather than another app's count`() {
+        val settings = AppSettings(blockedUids = setOf(10135, 10200))
+        assembler.setBlockedAttempts(mapOf(10135 to 7L))
+        val snap = tick(1_000L, flows = FlowTable(), settings = settings)
+        assertEquals(0L, snap.apps.first { it.uid == 10200 }.blockedAttempts)
+    }
+
+    /**
      * The regression that made capture mode useless for throughput. The flow
      * side prunes dead flows with `retain`, which drops every key it is not
      * given; while it shared a tracker with the API engine that call deleted

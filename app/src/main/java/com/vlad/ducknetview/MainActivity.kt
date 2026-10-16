@@ -57,6 +57,7 @@ import com.vlad.ducknetview.ui.screens.InterfacesScreen
 import com.vlad.ducknetview.ui.screens.OnboardingSheet
 import com.vlad.ducknetview.ui.screens.ScreenInfoSheet
 import com.vlad.ducknetview.ui.screens.UsageInfoSheet
+import com.vlad.ducknetview.ui.screens.NeighboursScreen
 import com.vlad.ducknetview.ui.screens.OverviewScreen
 import com.vlad.ducknetview.ui.screens.RoutesScreen
 import com.vlad.ducknetview.ui.screens.ServicesScreen
@@ -289,6 +290,7 @@ class MainActivity : ComponentActivity() {
             Tab.CONNECTIONS -> ConnectionsScreen(state, vm, twoPane = twoPane)
             Tab.DOMAINS -> DomainsScreen(state, vm, twoPane = twoPane)
             Tab.ROUTES -> RoutesScreen(state, vm, twoPane = twoPane)
+            Tab.NEIGHBOURS -> NeighboursScreen(state, vm, twoPane = twoPane)
             Tab.EVENTS -> EventsScreen(state, vm, twoPane = twoPane)
         }
     }

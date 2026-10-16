@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.vlad.ducknetview.domain.model.BlockedAttempt
 import com.vlad.ducknetview.domain.model.DomainObservation
 import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.model.Proto
@@ -211,6 +212,7 @@ class DuckVpnService : VpnService() {
                 tcpFlows[key] = c
                 if (VpnBridge.isBlocked(flow.uid)) {
                     c.reject()
+                    VpnBridge.noteBlocked(key, Proto.TCP, now, flow.uid)
                     return@synchronized null
                 }
                 c.onSyn(tcp, now)
@@ -249,6 +251,7 @@ class DuckVpnService : VpnService() {
                     // With QUIC this is the common case, not the rare one.
                     flow.blocked = true
                     retire(key, now)
+                    VpnBridge.noteBlocked(key, Proto.UDP, now, flow.uid)
                     return@synchronized null
                 }
                 c = UdpConnection(
@@ -260,6 +263,10 @@ class DuckVpnService : VpnService() {
                     protect = { sock -> protect(sock) },
                     scope = scope ?: return@synchronized null,
                     onDnsPayload = { data -> notePassiveDns(data, flow.uid) },
+                    // The same sink a TLS ClientHello feeds. A name is a name
+                    // whichever handshake carried it, and the Domains screen
+                    // labels the row with where it came from.
+                    onSni = { name -> VpnBridge.noteQuicSni(key.dstIp, name, flow.uid) },
                     onClosed = { k -> closeUdp(k) },
                 )
                 if (!c.start(now)) {
@@ -552,6 +559,8 @@ object VpnBridge {
 
     @Volatile var domainSink: (DomainObservation) -> Unit = { }
 
+    @Volatile var blockedSink: (BlockedAttempt) -> Unit = { }
+
     @Volatile var notificationUpdater: (Context) -> Unit = { }
 
     fun attach(t: FlowTable) {
@@ -578,18 +587,47 @@ object VpnBridge {
     fun noteDomain(observation: DomainObservation) = domainSink(observation)
 
     /**
+     * A connection refused because its app is blocked.
+     *
+     * The label is left for the drain: resolving an app name here would run
+     * the package manager on the packet path, once per retry, for an app that
+     * by definition retries hard.
+     */
+    fun noteBlocked(key: FlowKey, proto: Proto, at: Long, uid: Int) = blockedSink(
+        BlockedAttempt(
+            uid = uid,
+            proto = proto,
+            remoteAddr = key.dstIp,
+            remotePort = key.dstPort,
+            at = at,
+        )
+    )
+
+    /**
      * A name read from a TLS ClientHello. It feeds the same address-to-name
      * cache a DNS answer would, which is the point: with Private DNS switched
      * on — the default on most modern Android — no DNS answer ever crosses the
      * TUN, and this is the only name the connection table can show.
      */
-    fun noteSni(ip: String, name: String, uid: Int) {
+    fun noteSni(ip: String, name: String, uid: Int) = noteName(ip, name, uid, NameSource.SNI)
+
+    /**
+     * A name read from the ClientHello inside a QUIC Initial.
+     *
+     * Same sink, different source label. QUIC was the blind spot the Domains
+     * screen had to admit to: a browser page load is entirely UDP/443, so
+     * neither a DNS answer nor a TLS record crosses the TUN and the screen
+     * stayed empty for the majority of a phone's traffic.
+     */
+    fun noteQuicSni(ip: String, name: String, uid: Int) = noteName(ip, name, uid, NameSource.QUIC)
+
+    private fun noteName(ip: String, name: String, uid: Int, source: NameSource) {
         dnsSink(ip, name)
         domainSink(
             DomainObservation(
                 name = name,
                 uid = uid,
-                source = NameSource.SNI,
+                source = source,
                 at = System.currentTimeMillis(),
                 addresses = listOf(ip),
             )

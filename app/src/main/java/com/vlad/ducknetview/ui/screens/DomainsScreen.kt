@@ -314,6 +314,7 @@ private fun domainDetailLines(row: DomainRow, now: Long): List<Pair<String, Stri
     "Source" to when (row.source) {
         NameSource.DNS -> "DNS answer seen on the wire"
         NameSource.SNI -> "TLS SNI (no DNS answer was visible)"
+        NameSource.QUIC -> "QUIC Initial (HTTP/3; no DNS answer was visible)"
     },
     "Lookups" to row.lookups.toString(),
     "First seen" to formatClock(row.firstSeen, now),

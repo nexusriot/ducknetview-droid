@@ -7,6 +7,7 @@ import com.vlad.ducknetview.domain.model.EngineMode
 import com.vlad.ducknetview.domain.model.Exposure
 import com.vlad.ducknetview.domain.model.LatencySample
 import com.vlad.ducknetview.domain.model.NetSnapshot
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.domain.model.Scope
@@ -77,7 +78,7 @@ class PrometheusTest {
         assertEquals(
             "README.md and docs/DESIGN.md say how many families this emits; " +
                 "update both when this number changes",
-            43,
+            49,
             families(Prometheus.render(fullSnapshot())).size,
         )
     }
@@ -518,6 +519,13 @@ class PrometheusTest {
         atMillis = 1_700_000_000_000L,
         engine = EngineMode.VPN,
         deviceName = "Pixel 7",
+        quota = QuotaStatus(
+            capBytes = 20_000_000_000L,
+            usedBytes = 7_500_000_000L,
+            cycleStartDay = 20_000L,
+            cycleEndDay = 20_030L,
+            todayDay = 20_010L,
+        ),
         uptimeMillis = 60_000L,
         networks = listOf(
             NetworkRow(

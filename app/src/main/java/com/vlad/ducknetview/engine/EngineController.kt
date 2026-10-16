@@ -15,28 +15,37 @@ import com.vlad.ducknetview.data.HostSeenRepository
 import com.vlad.ducknetview.domain.alerts.AlertRules
 import com.vlad.ducknetview.domain.baseline.Baseline
 import com.vlad.ducknetview.domain.events.DomainEvents
+import com.vlad.ducknetview.domain.events.BlockedEvents
 import com.vlad.ducknetview.domain.events.EventEngine
 import com.vlad.ducknetview.domain.model.AppSettings
+import com.vlad.ducknetview.domain.model.BlockedAttempt
 import com.vlad.ducknetview.domain.model.DomainObservation
 import com.vlad.ducknetview.domain.model.Event
+import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.LatencySample
+import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.net.LinkChoice
+import com.vlad.ducknetview.domain.net.Subnet
 import com.vlad.ducknetview.domain.rates.RateTracker
 import com.vlad.ducknetview.domain.rdns.RdnsCache
 import com.vlad.ducknetview.domain.totals.SessionTotals
+import com.vlad.ducknetview.domain.usage.Quota
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import com.vlad.ducknetview.engine.api.ApiEngine
 import com.vlad.ducknetview.engine.api.AppCatalog
 import com.vlad.ducknetview.engine.api.ExternalIpFetcher
 import com.vlad.ducknetview.engine.api.LatencyProber
+import com.vlad.ducknetview.engine.api.NeighbourScanner
 import com.vlad.ducknetview.engine.api.PortScanner
 import com.vlad.ducknetview.engine.api.UsageHistorySource
 import com.vlad.ducknetview.engine.vpn.VpnBridge
 import com.vlad.ducknetview.service.AlertDelivery
 import com.vlad.ducknetview.service.Notifications
+import java.time.LocalDate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,6 +72,7 @@ class EngineController(
     private val prober: LatencyProber,
     private val externalIp: ExternalIpFetcher,
     private val scanner: PortScanner,
+    private val neighbours: NeighbourScanner,
     private val usage: UsageHistorySource,
     private val events: EventRepository,
     private val closedRepo: ClosedConnRepository,
@@ -75,12 +85,16 @@ class EngineController(
     private val assembler = SnapshotAssembler(catalog, rates, totals, rdns)
     private val eventEngine = EventEngine()
     private val alertRules = AlertRules()
+    private val blockedEvents = BlockedEvents()
 
     private val _snapshot = MutableStateFlow(NetSnapshot())
     val snapshot: StateFlow<NetSnapshot> = _snapshot.asStateFlow()
 
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+
+    private val _neighbourScanning = MutableStateFlow(false)
+    val neighbourScanning: StateFlow<Boolean> = _neighbourScanning.asStateFlow()
 
     @Volatile private var settings: AppSettings = AppSettings()
     @Volatile private var baseline: Baseline = Baseline(emptySet(), 0L)
@@ -98,6 +112,8 @@ class EngineController(
 
     private var loop: Job? = null
     private var scanJob: Job? = null
+    private var neighbourJob: Job? = null
+    private var lifecycleJob: Job? = null
 
     /** Conflated so a burst of wakeups costs one early tick, not a queue of them. */
     private val wake = Channel<Unit>(Channel.CONFLATED)
@@ -115,6 +131,16 @@ class EngineController(
     private val pendingDomains = ArrayList<DomainObservation>()
     private val domainLock = Any()
 
+    /**
+     * Refusals observed since the last tick, and the running per-app total
+     * the Apps screen renders. Buffered for the same reason names are: the
+     * sink is the packet path, and a blocked app retries hard enough that
+     * anything more than an append would be felt there.
+     */
+    private val pendingBlocked = ArrayList<BlockedAttempt>()
+    private val blockedLock = Any()
+    private val blockedCounts = LinkedHashMap<Int, Long>()
+
     @Volatile private var interactive: Boolean = true
     private var screenReceiver: BroadcastReceiver? = null
 
@@ -128,6 +154,7 @@ class EngineController(
         }
         VpnBridge.dnsSink = { ip, name -> rdns.put(ip, name) }
         VpnBridge.domainSink = { observation -> queueDomain(observation) }
+        VpnBridge.blockedSink = { attempt -> queueBlocked(attempt) }
         // Driven by the capture service's expiry tick (every 5 s), not by the
         // poll loop: the shade does not need a per-second redraw, and rebuilding
         // a notification at poll rate is a battery cost of its own.
@@ -143,6 +170,7 @@ class EngineController(
             }
         }
         registerScreenReceiver()
+        watchEngineLifecycle()
         // Seed the session dedupe from the hosts already on record before the
         // first tick can report them, so a restart is not a burst of "first
         // contact" for hosts this device has talked to for weeks.
@@ -155,6 +183,10 @@ class EngineController(
     fun stop() {
         loop?.cancel()
         loop = null
+        neighbourJob?.cancel()
+        neighbourJob = null
+        lifecycleJob?.cancel()
+        lifecycleJob = null
         unregisterScreenReceiver()
         api.stop()
     }
@@ -283,6 +315,20 @@ class EngineController(
         out
     }
 
+    private fun queueBlocked(attempt: BlockedAttempt) {
+        synchronized(blockedLock) {
+            if (pendingBlocked.size >= MAX_PENDING_BLOCKED) return
+            pendingBlocked += attempt
+        }
+    }
+
+    private fun drainBlocked(): List<BlockedAttempt> = synchronized(blockedLock) {
+        if (pendingBlocked.isEmpty()) return emptyList()
+        val out = pendingBlocked.toList()
+        pendingBlocked.clear()
+        out
+    }
+
     private suspend fun tick(now: Long) {
         val sample = api.sample(now)
         val flows = VpnBridge.table
@@ -291,6 +337,15 @@ class EngineController(
         // column exported blank, and the wlan0 / tun0 filter chips compared
         // against "" and so emptied the table whichever one was picked.
         VpnBridge.currentNetworkLabel = LinkChoice.underlyingLabel(sample.networks)
+        // Drained before the snapshot is built, not after: the counter is read
+        // by buildApps, and a drain on the far side would always render the
+        // figure one tick stale — including the first one, which is the tick
+        // the user is watching when they press Block.
+        val blocked = drainBlocked().map { a ->
+            if (a.uid == INVALID_UID) a else a.copy(appLabel = catalog.row(a.uid).label)
+        }
+        for (a in blocked) blockedCounts[a.uid] = (blockedCounts[a.uid] ?: 0L) + 1L
+        assembler.setBlockedAttempts(blockedCounts)
         val snap = assembler.assemble(
             now = now,
             api = sample,
@@ -302,6 +357,7 @@ class EngineController(
             externalIpAt = externalIp.fetchedAt,
             latency = latency,
             scanRunning = _scanning.value,
+            neighbourScanRunning = _neighbourScanning.value,
         )
         _snapshot.value = snap
 
@@ -333,17 +389,84 @@ class EngineController(
                 row.copy(appLabel = app.label, packageName = app.packageName)
             }
         produced += DomainEvents.of(freshDomains, watchlist, now)
+        produced += blockedEvents.of(blocked, now)
         produced += alertRules.evaluate(snap, settings, now)
-        if (produced.isNotEmpty()) {
-            events.record(produced)
-            for (e in produced) {
-                if (e.level != EventLevel.INFO) {
-                    Notifications.notifyEvent(context, e)
-                    AlertDelivery.deliver(context, settings, e)
+        record(produced)
+        prevSnapshot = snap
+    }
+
+    /**
+     * Persist a batch and deliver anything above INFO. Shared by the poll tick
+     * and by [watchEngineLifecycle], which produces outside a tick: a capture
+     * that Android revokes has to reach the user through the same path a
+     * threshold breach does, and duplicating it is how one of them drifts.
+     */
+    private suspend fun record(produced: List<Event>) {
+        if (produced.isEmpty()) return
+        events.record(produced)
+        for (e in produced) {
+            if (e.level == EventLevel.INFO) continue
+            Notifications.notifyEvent(context, e)
+            AlertDelivery.deliver(context, settings, e)
+        }
+    }
+
+    /**
+     * Capture going up and down is a change in what the rest of the log can
+     * even see, so it belongs in the log.
+     *
+     * Revocation is the reason this is not optional. Android permits one VPN
+     * at a time, so another app connecting takes the slot and this one's
+     * capture simply ends — no error, no tick, nothing on any screen but a
+     * connection table that quietly stops growing. [EventKind.ENGINE_REVOKED]
+     * existed for it and had no producer, which made the one externally caused
+     * failure the app cannot prevent also the one it never mentioned.
+     *
+     * One collector rather than two, because `reportRevoked` sets the revoked
+     * flag *before* detaching: by the time `running` goes false the reason is
+     * already known, and collecting both flows would report a revocation as a
+     * revocation and a stop. The first emission is the state at subscribe
+     * time, not a transition, so it seeds instead of reporting — the same rule
+     * the snapshot diff follows for its first snapshot.
+     */
+    private fun watchEngineLifecycle() {
+        if (lifecycleJob != null) return
+        lifecycleJob = scope.launch {
+            var reported: Boolean? = null
+            VpnBridge.running.collect { running ->
+                val was = reported
+                reported = running
+                if (was == null || was == running) return@collect
+                val now = System.currentTimeMillis()
+                val event = when {
+                    running -> Event(
+                        at = now,
+                        level = EventLevel.INFO,
+                        kind = EventKind.ENGINE_STARTED,
+                        subject = "capture",
+                        detail = "per-connection accounting is live",
+                    )
+
+                    VpnBridge.revoked.value -> Event(
+                        at = now,
+                        level = EventLevel.WARN,
+                        kind = EventKind.ENGINE_REVOKED,
+                        subject = "capture",
+                        detail = "Android revoked the VPN \u2014 another app took the " +
+                            "single VPN slot; the engine has fallen back to API mode",
+                    )
+
+                    else -> Event(
+                        at = now,
+                        level = EventLevel.INFO,
+                        kind = EventKind.ENGINE_STOPPED,
+                        subject = "capture",
+                        detail = "back to API mode",
+                    )
                 }
+                runCatching { record(listOf(event)) }
             }
         }
-        prevSnapshot = snap
     }
 
     private suspend fun refreshLatency() {
@@ -358,6 +481,38 @@ class EngineController(
         // app's "today" figure was 0 B however much it had moved.
         runCatching { usage.todayPerUid() }
             .onSuccess { assembler.setTodayUsage(it) }
+        refreshQuota()
+    }
+
+    /**
+     * The billing cycle, on the same slow cadence as the usage query that
+     * sits beside it — both are `NetworkStatsManager` round trips, and
+     * neither answer changes meaningfully between two polls.
+     *
+     * The cycle is recomputed rather than cached, so the status is correct on
+     * the day it rolls over without anything having to notice the date
+     * changed.
+     */
+    private suspend fun refreshQuota() {
+        val s = settings
+        if (s.dataCapBytes <= 0L) {
+            assembler.setQuota(QuotaStatus())
+            return
+        }
+        val today = LocalDate.now()
+        val start = Quota.cycleStart(today, s.cycleStartDay)
+        val used = runCatching {
+            usage.cycleTotal(usage.startOfDay(start.toEpochDay()), s.quotaMobileOnly)
+        }.getOrNull() ?: return
+        assembler.setQuota(
+            Quota.status(
+                today = today,
+                startDay = s.cycleStartDay,
+                capBytes = s.dataCapBytes,
+                usedBytes = used,
+                mobileOnly = s.quotaMobileOnly,
+            )
+        )
     }
 
     fun scanServices(onDone: (List<ServiceRow>) -> Unit) {
@@ -384,6 +539,50 @@ class EngineController(
 
     fun currentServices(): List<ServiceRow> = _snapshot.value.services
 
+    /**
+     * Sweep the default link's own IPv4 prefix for neighbours.
+     *
+     * On demand only, never on the poll tick: this is the one source in the
+     * app that puts packets on the wire to hosts the user did not name, and a
+     * background sweep of someone's office network every two seconds is not a
+     * thing a monitor should do without being asked.
+     */
+    fun scanNeighbours(onDone: (List<NeighbourRow>, String) -> Unit = { _, _ -> }) {
+        if (neighbourJob?.isActive == true) return
+        neighbourJob = scope.launch {
+            _neighbourScanning.value = true
+            try {
+                val snap = _snapshot.value
+                val link = snap.networks.firstOrNull { it.isDefault && !it.isNoise }
+                    ?: snap.networks.firstOrNull { !it.isNoise }
+                val subnet = link?.addresses?.let(Subnet::firstV4)
+                if (subnet == null) {
+                    // An IPv6-only link, or one with nothing assigned. The
+                    // screen explains it; recording the empty result is what
+                    // lets it tell that apart from "never scanned".
+                    assembler.setNeighbours(emptyList(), System.currentTimeMillis(), "")
+                    onDone(emptyList(), "")
+                    return@launch
+                }
+                val selfAddresses = snap.networks
+                    .flatMap { it.addresses }
+                    .map { it.substringBefore('/') }
+                    .toSet()
+                val rows = withContext(Dispatchers.IO) {
+                    neighbours.scan(
+                        subnet = subnet,
+                        gateway = link.gateway,
+                        selfAddresses = selfAddresses,
+                    )
+                }
+                assembler.setNeighbours(rows, System.currentTimeMillis(), subnet)
+                onDone(rows, subnet)
+            } finally {
+                _neighbourScanning.value = false
+            }
+        }
+    }
+
     private fun deviceName(): String =
         listOfNotNull(Build.MANUFACTURER, Build.MODEL)
             .filter { it.isNotBlank() }
@@ -393,6 +592,19 @@ class EngineController(
     companion object {
         /** One busy browser tab's worth of names; past this a tick is dropping. */
         private const val MAX_PENDING_DOMAINS = 512
+
+        /**
+         * A blocked app retries without pause, so this bound is reached far
+         * more easily than the names one. The count on the Apps row is
+         * capped with it and that is the honest answer: past this many
+         * refusals in one interval the number is "a great many", and holding
+         * every one of them to be exact would cost more than the fact is
+         * worth.
+         */
+        private const val MAX_PENDING_BLOCKED = 512
+
+        /** `Process.INVALID_UID`, kept here so the domain stays Android-free. */
+        private const val INVALID_UID = -1
         private const val LATENCY_INTERVAL_MS = 15_000L
         private const val USAGE_INTERVAL_MS = 120_000L
         val BOOT_ELAPSED: Long get() = SystemClock.elapsedRealtime()

@@ -1,5 +1,8 @@
 package com.vlad.ducknetview.domain.model
 
+import com.vlad.ducknetview.domain.net.Trust
+import com.vlad.ducknetview.domain.usage.QuotaStatus
+
 /**
  * The immutable snapshot every screen renders from. One is produced per poll
  * tick by the SnapshotAssembler; screens never reach into the engines directly.
@@ -21,6 +24,11 @@ data class NetSnapshot(
     val services: List<ServiceRow> = emptyList(),
     val serviceScanAt: Long = 0L,
     val serviceScanRunning: Boolean = false,
+    val neighbours: List<NeighbourRow> = emptyList(),
+    val neighbourScanAt: Long = 0L,
+    val neighbourScanRunning: Boolean = false,
+    /** The prefix the last sweep covered, for the screen to name. */
+    val neighbourSubnet: String = "",
     val total: Throughput = Throughput(),
     val totalPeakRx: Long = 0L,
     val totalPeakTx: Long = 0L,
@@ -37,6 +45,22 @@ data class NetSnapshot(
     val externalIp: String? = null,
     val externalIpAt: Long = 0L,
     val security: SecurityCounts = SecurityCounts(),
+    /**
+     * The billing cycle against its cap. Always present; [QuotaStatus.configured]
+     * is false until the user sets one, and every screen keys off that rather
+     * than off a null.
+     */
+    val quota: QuotaStatus = QuotaStatus(),
+    /**
+     * Whether the default link is one the automatic responses should fire on.
+     *
+     * Computed once, by the assembler, because it is the policy outcome and
+     * not the raw verdict: it folds in "treat a network I have never seen as
+     * untrusted". Both the event producer and the automatic actions read this
+     * one field, so the log can never explain an action that did not happen
+     * or stay silent about one that did.
+     */
+    val untrustedDefault: Boolean = false,
     val frozen: Boolean = false,
     val frozenLabel: String? = null,
     val error: String? = null,
@@ -54,7 +78,11 @@ data class Capabilities(
     val hasPerConnBytes: Boolean = false,
     val hasRtt: Boolean = false,
     val hasPerAppLive: Boolean = false,
-    val hasRetrans: Boolean = false,
+    // There is deliberately no `hasRetrans`. It existed, it was `false` in
+    // every mode and nothing read it: a capability flag with no true case is
+    // the capability layer's version of the empty column this class exists to
+    // prevent. Android exposes no unprivileged source for retransmit counts,
+    // so the column is absent rather than gated — see DESIGN §3.
 ) {
     companion object {
         val API = Capabilities(hasPerAppLive = false)
@@ -63,7 +91,6 @@ data class Capabilities(
             hasPerConnBytes = true,
             hasRtt = true,
             hasPerAppLive = true,
-            hasRetrans = false,
         )
         fun of(mode: EngineMode) = if (mode == EngineMode.VPN) VPN else API
     }
@@ -100,6 +127,15 @@ data class NetworkRow(
     val mtu: Int = 0,
     val metered: Boolean = false,
     val validated: Boolean = false,
+    /**
+     * The platform has detected a captive portal on this link: traffic is
+     * being intercepted until a sign-in page is satisfied. It is reported
+     * separately from [validated] because the two answer different questions —
+     * an unvalidated link may simply have no internet, while this one has a
+     * middlebox in front of it, and every reading the app takes through it
+     * (latency, external IP, reverse DNS, a webhook) is measuring the portal.
+     */
+    val captivePortal: Boolean = false,
     val isDefault: Boolean = false,
     val gateway: String? = null,
     val dnsServers: List<String> = emptyList(),
@@ -116,6 +152,8 @@ data class NetworkRow(
     val txHistory: List<Float> = emptyList(),
     val wifi: WifiState? = null,
     val cellular: CellularState? = null,
+    /** What the user has said about this network, or that they have not. */
+    val trust: Trust = Trust.UNKNOWN,
 ) {
     /** Loopback, down links and emulator/dummy plumbing the hide-noise filter drops. */
     val isNoise: Boolean
@@ -277,7 +315,40 @@ data class AppRow(
     val blocked: Boolean = false,
     val excludedFromVpn: Boolean = false,
     val remoteHosts: Int = 0,
+    /**
+     * Connections refused on this app's behalf since capture started.
+     *
+     * The firewall is the app's one enforcement action and it used to leave no
+     * trace at all: a blocked app simply has no flows, which looks identical
+     * to an app that was not trying. This is the evidence that the switch did
+     * something.
+     */
+    val blockedAttempts: Long = 0L,
 )
+
+/**
+ * One connection refused because its app is blocked.
+ *
+ * Observed on the capture engine's packet path and buffered for the poll tick
+ * rather than acted on where it is seen — the same rule a DNS answer follows,
+ * and for the same reason: a blocked app retries hard, and a database write
+ * behind every refusal would put the cost of the block on the packet path.
+ *
+ * [appLabel] is filled when the batch is drained, not here. The packet path
+ * knows only a uid, and an event reading "a connection was refused" without
+ * saying whose is most of the value missing.
+ */
+data class BlockedAttempt(
+    val uid: Int,
+    val proto: Proto,
+    val remoteAddr: String,
+    val remotePort: Int,
+    val at: Long,
+    val appLabel: String = "",
+) {
+    val remote: String
+        get() = if (proto == Proto.ICMP) remoteAddr else fmtAddr(remoteAddr, remotePort)
+}
 
 // ---------------- services (self port scan) ----------------
 
@@ -299,6 +370,61 @@ data class ServiceRow(
     /** Stable identity used by the baseline and by move-correlation. */
     val key: String get() = "$proto|$bindAddr:$port"
     val baselineKey: String get() = "$proto|$bindAddr:$port"
+}
+
+// ---------------- lan neighbours ----------------
+
+/**
+ * How a neighbour was found. A row says which, as the Domains rows do.
+ *
+ * [BOTH] exists because most hosts on a real network answer both ways, and
+ * the first version of this reported whichever source happened to arrive
+ * first: a printer named `Canon MF270 Series` from an mDNS record was
+ * labelled "via ping" on the test tablet, which is a claim the ping could not
+ * possibly have supported. The value is now derived from the evidence on the
+ * row rather than from arrival order, so it cannot contradict the name beside
+ * it.
+ */
+enum class NeighbourSource(val label: String) {
+    PING("ping"),
+    MDNS("mDNS"),
+    BOTH("ping + mDNS"),
+}
+
+/**
+ * One host answering on the same link as this device.
+ *
+ * The Routes screen used to stop at "the ARP table is not available on
+ * Android 10 and later", which is true and was the end of it. The listeners
+ * question had the same shape and was answered by knocking on the device's own
+ * doors; this answers the neighbours question the same way, by asking the link
+ * rather than by reading a table the platform will not show.
+ *
+ * Unlike a real neighbour table this cannot see a host that answers nothing —
+ * a device with ICMP filtered and no mDNS is silent here and present on the
+ * network. The screen says so.
+ */
+data class NeighbourRow(
+    val address: String,
+    val hostname: String = "",
+    val source: NeighbourSource = NeighbourSource.PING,
+    val rttMillis: Int = -1,
+    val services: List<String> = emptyList(),
+    val isSelf: Boolean = false,
+    val isGateway: Boolean = false,
+    val firstSeen: Long = 0L,
+    val lastSeen: Long = 0L,
+) {
+    val key: String get() = address
+
+    /** True when mDNS contributed: a resolve always records its service type. */
+    val fromMdns: Boolean get() = services.isNotEmpty()
+
+    /** True when an echo came back; -1 is "no reply", not "zero latency". */
+    val answeredPing: Boolean get() = rttMillis >= 0
+
+    /** What the user reads first: a name when one was learnt, else the address. */
+    val display: String get() = hostname.ifEmpty { address }
 }
 
 // ---------------- latency ----------------

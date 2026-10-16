@@ -38,6 +38,8 @@ data class AppSettings(
     val servicesSortDesc: Boolean = false,
     val domainsSortCol: String = "seen",
     val domainsSortDesc: Boolean = true,
+    val neighboursSortCol: String = "address",
+    val neighboursSortDesc: Boolean = false,
     val externalIpEnabled: Boolean = true,
     val latencyTargets: List<String> = emptyList(),
     val watchlist: List<String> = emptyList(),
@@ -55,6 +57,33 @@ data class AppSettings(
     val alertRttMs: Int = 0,
     val alertConnGrowthPolls: Int = 0,
     val alertFanoutHosts: Int = 0,
+    /**
+     * The plan's allowance in bytes; zero disables the whole budget feature,
+     * matching every other threshold on that screen.
+     */
+    val dataCapBytes: Long = 0L,
+    /** Day of the month the plan resets. Clamped into a short month. */
+    val cycleStartDay: Int = 1,
+    /** Count mobile only, which is what a cap is almost always written against. */
+    val quotaMobileOnly: Boolean = true,
+    /** Warn at this percentage of the cap; zero disables that rule alone. */
+    val alertQuotaPercent: Int = 0,
+    /** Warn when the projection passes the cap. */
+    val alertQuotaProjected: Boolean = false,
+    /**
+     * Networks the user has vouched for, and ones they have not, by the
+     * stable key `NetworkTrust.keyOf` derives. Two sets rather than a map
+     * because the third state — never seen before — is the interesting one,
+     * and absence expresses it without a sentinel.
+     */
+    val trustedNetworks: Set<String> = emptySet(),
+    val untrustedNetworks: Set<String> = emptySet(),
+    /** Whether a network nobody has judged yet is treated as untrusted. */
+    val treatUnknownNetworksAsUntrusted: Boolean = false,
+    /** Start capture on joining an untrusted network, if consent already exists. */
+    val autoCaptureOnUntrusted: Boolean = false,
+    /** Scan this device's own listeners on joining an untrusted network. */
+    val autoScanOnUntrusted: Boolean = false,
     val alertsAckedAt: Long = 0L,
     /** False until the first-run explainer has been seen and dismissed. */
     val onboardingShown: Boolean = false,

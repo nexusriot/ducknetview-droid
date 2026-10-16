@@ -170,6 +170,7 @@ fun infoFor(tab: Tab, caps: Capabilities, engine: EngineMode): List<Pair<String,
         Tab.CONNECTIONS -> connectionsInfo(capturing, caps)
         Tab.DOMAINS -> domainsInfo(capturing)
         Tab.ROUTES -> routesInfo(capturing)
+        Tab.NEIGHBOURS -> neighboursInfo(capturing)
         Tab.EVENTS -> eventsInfo(capturing)
     }
 }
@@ -382,25 +383,30 @@ private fun domainsInfo(capturing: Boolean): List<Pair<String, String>> = if (!c
 } else {
     listOf(
         "Where names come from" to
-            "Two sources, and each row says which. DNS: the answer to a lookup, read " +
-            "as it crosses the TUN. SNI: the server name a TLS client sends in the " +
-            "clear at the start of a handshake.",
+            "Three sources, and each row says which. DNS: the answer to a lookup, " +
+            "read as it crosses the TUN. SNI: the server name a TLS client sends in " +
+            "the clear at the start of a handshake. QUIC: the same name, out of the " +
+            "ClientHello inside a QUIC Initial packet.",
         "Private DNS changes everything" to
             "With an encrypted resolver configured — the default on most modern " +
             "Android — no DNS answer is readable at all, and every name here comes " +
             "from SNI. An empty DNS column on such a network is the encryption " +
             "working, not a gap in this table.",
-        "QUIC is the real blind spot" to
-            "A browser reaches most sites over HTTP/3, which is QUIC on UDP 443, " +
-            "and QUIC carries its ClientHello inside an encrypted packet. No name " +
-            "is readable there, so a page load can leave a udp/quic row in the " +
-            "connection table and nothing at all on this screen. Apps still using " +
-            "TCP TLS are the ones that fill it.",
+        "QUIC was the real blind spot" to
+            "A browser reaches most sites over HTTP/3, which is QUIC on UDP 443, so " +
+            "a page load produced no DNS answer and no TLS record and left this " +
+            "screen empty. QUIC Initial packets are protected with keys derived " +
+            "from a salt published in RFC 9001 and the connection id the client " +
+            "sends in the clear, so the name in them is readable by anyone on the " +
+            "path — the protection is there to stop middleboxes freezing the " +
+            "format, not to keep the contents private. Only the first packet of a " +
+            "connection is read; nothing after it is.",
         "This is not TLS interception" to
-            "SNI is sent unencrypted before any key exchange. Nothing is decrypted, " +
-            "no certificate is substituted and no key is touched; the handshake is " +
-            "relayed byte for byte either way. Encrypted Client Hello will remove " +
-            "this source in time, and rows will simply fall back to addresses.",
+            "A server name is sent before any key exchange, in TLS and in QUIC " +
+            "alike. Nothing is decrypted that needs a secret, no certificate is " +
+            "substituted, no key is touched, and the handshake is relayed byte for " +
+            "byte either way. Encrypted Client Hello will remove both sources in " +
+            "time, and rows will simply fall back to addresses.",
         "Attribution" to
             "A name is attributed to the app whose flow carried it, so the same CDN " +
             "reached by two apps is two rows rather than one.",
@@ -409,6 +415,48 @@ private fun domainsInfo(capturing: Boolean): List<Pair<String, String>> = if (!c
             "No payload, no query log beyond that, 30 days, and a Clear button.",
     )
 }
+
+private fun neighboursInfo(capturing: Boolean): List<Pair<String, String>> = listOf(
+    "Why this screen exists" to
+        "Android has not let an app read the ARP / neighbour table since " +
+        "version 10, and there is no public API for it. The Services screen " +
+        "answers the same shape of question by knocking on this device's own " +
+        "ports; this one answers it by asking the link.",
+    "This one is active" to
+        "Every other screen in ducknetview watches traffic that was happening " +
+        "anyway. This one sends packets: an ICMP echo to each address in the " +
+        "link's own IPv4 prefix, and an mDNS query for names. That is why it " +
+        "has a button and never refreshes itself.",
+    "What it sends, and where" to
+        "Echo requests go through the same unprivileged ping socket the " +
+        "gateway probe uses — the kernel restricts it to echo, so nothing " +
+        "else can leave it. Only this device's own on-link prefix is swept, " +
+        "never a range you type and never a routed network. The broadcast " +
+        "address is skipped.",
+    "Silence is not absence" to
+        "This lists what answered. A host that filters ICMP and publishes no " +
+        "mDNS is on the network and not on this screen, and a guest or " +
+        "client-isolation network is designed so that nothing answers at all. " +
+        "Read an empty table as 'nothing replied', never as 'nothing is here'.",
+    "Names come from mDNS" to
+        "Service discovery runs through Android's own NSD daemon, so it needs " +
+        "no multicast permission and never crosses this app's TUN. A host " +
+        "that publishes no service shows as an address, which is all a ping " +
+        "can tell you.",
+    "IPv6" to
+        "Not swept. An on-link IPv6 prefix is a /64, so there is no list of " +
+        "addresses to walk, and the neighbour discovery IPv6 uses instead " +
+        "rides on multicast an app cannot read here.",
+    "With capture on" to
+        if (capturing) {
+            "This screen's own probes are protected out of the TUN, so they " +
+                "are not relayed, not counted, and do not appear in Conns. A " +
+                "sweep therefore cannot inflate the figures on any other screen."
+        } else {
+            "Capture is off, which changes nothing here: the sweep uses its " +
+                "own sockets either way and does not need the TUN."
+        },
+)
 
 private fun routesInfo(capturing: Boolean): List<Pair<String, String>> = listOf(
     "Routes and DNS" to
