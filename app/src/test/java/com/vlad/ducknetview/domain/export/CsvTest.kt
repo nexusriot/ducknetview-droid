@@ -1,6 +1,8 @@
 package com.vlad.ducknetview.domain.export
 
 import com.vlad.ducknetview.domain.Fixtures
+import com.vlad.ducknetview.domain.group.Grouping
+import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
@@ -83,6 +85,78 @@ class CsvTest {
         val out = Csv.services(listOf(Fixtures.service(bindAddr = "0.0.0.0", port = 22)))
         assertTrue(out.contains("tcp,0.0.0.0,22"))
         assertTrue(out.contains("exposed"))
+    }
+
+    /**
+     * The closed table has columns no live row can fill, and the export used to
+     * have no function for it at all: the Share button on a screen reading
+     * "8 closed" wrote fourteen `established` rows, measured on the M10.
+     */
+    @Test
+    fun closedExportCarriesTheNumbersOnlyAClosedSocketHas() {
+        val out = Csv.closed(
+            listOf(
+                Fixtures.closed(
+                    row = Fixtures.conn(state = ConnState.CLOSED, rttMillis = 42),
+                    closedAt = 1_700_000_000_000L,
+                    lifetimeMillis = 12_345L,
+                    finalRx = 98_765L,
+                    finalTx = 4_321L,
+                )
+            )
+        )
+
+        val lines = out.trimEnd().split(Csv.EOL)
+        val header = lines.first().split(",")
+        val row = lines[1].split(",")
+        assertEquals(header.size, row.size)
+        assertTrue(header.contains("closed_at"))
+        assertTrue(header.contains("lifetime_ms"))
+        assertEquals("1700000000000", row[header.indexOf("closed_at")])
+        assertEquals("12345", row[header.indexOf("lifetime_ms")])
+        // Lifetime totals, which is the point of the closed table.
+        assertEquals("98765", row[header.indexOf("rx_bytes")])
+        assertEquals("4321", row[header.indexOf("tx_bytes")])
+        assertEquals("closed", row[header.indexOf("state")])
+    }
+
+    @Test
+    fun closedExportIsHeaderOnlyWhenNothingHasClosed() {
+        val out = Csv.closed(emptyList())
+
+        assertEquals(1, out.trimEnd().split(Csv.EOL).size)
+    }
+
+    /** The grouped view had no export function either. */
+    @Test
+    fun groupsExportHasOneRowPerHostWithItsFoldedTotals() {
+        val groups = Grouping.of(
+            listOf(
+                Fixtures.conn(key = "a", remoteAddr = "93.184.216.34", rxBytes = 10, txBytes = 1),
+                Fixtures.conn(key = "b", remoteAddr = "93.184.216.34", rxBytes = 20, txBytes = 2),
+                Fixtures.conn(key = "c", remoteAddr = "1.1.1.1", rxBytes = 5, txBytes = 5),
+            )
+        )
+
+        val out = Csv.groups(groups)
+
+        val lines = out.trimEnd().split(Csv.EOL)
+        val header = lines.first().split(",")
+        assertEquals(3, lines.size)
+        assertTrue(header.contains("conns"))
+        val folded = lines.drop(1).first { it.startsWith("93.184.216.34,") }.split(",")
+        assertEquals("2", folded[header.indexOf("conns")])
+        assertEquals("30", folded[header.indexOf("rx_bytes")])
+        assertEquals("3", folded[header.indexOf("tx_bytes")])
+    }
+
+    @Test
+    fun groupsExportQuotesTheAppListItJoins() {
+        val out = Csv.groups(
+            Grouping.of(listOf(Fixtures.conn(appLabel = "Maps, Navigation")))
+        )
+
+        assertTrue(out.contains("\"Maps, Navigation\""))
     }
 
     @Test

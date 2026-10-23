@@ -156,6 +156,11 @@ be inspected on the phone:
 ssh somehost ducknetview --json > snap.json   # then open snap.json in the app
 ```
 
+A file this app exports carries everything the app itself shows, the LAN sweep
+and the data budget included, and a frozen screen draws what the file has. A
+file from the TUI simply has no such keys, so those screens keep saying the file
+carries none of it rather than showing an empty table as if it were the answer.
+
 ## Alert rules
 
 All opt-in, each rate-limited to once per minute per subject: per-app bps,
@@ -225,7 +230,7 @@ points at an SDK with **platform 35** and **platform-tools** installed. Writing
 `sdk.dir=/path/to/Sdk` into `local.properties` works too; the environment
 variable is preferred because it does not tempt anyone to commit the file.
 
-1480 unit tests and 44 instrumented tests; see **Running the tests** and
+1530 unit tests and 47 instrumented tests; see **Running the tests** and
 **Test on a device**.
 
 ## Test on a device
@@ -246,8 +251,8 @@ failure that is not a real failure — a debug APK built on another machine cann
 upgrade the installed one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so the script
 removes the stale package and retries rather than stopping.
 
-Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 44
-instrumented test methods; **42 do real work on a default run**, and the
+Verified on a PRITOM M10 tablet (Android 16 / API 36, arm64). There are 47
+instrumented test methods; **45 do real work on a default run**, and the
 remaining two skip unless given their arguments. The ICMP case skips as well on
 a kernel that does not permit unprivileged ping sockets, which is a
 configuration (`net.ipv4.ping_group_range`) rather than a guarantee.
@@ -259,6 +264,7 @@ configuration (`net.ipv4.ping_group_range`) rather than a guarantee.
 | `NeighbourSweepDeviceTest` | 8 | sweeps this device's real link and checks every row credits a source its own fields support |
 | `UsageMigrationDeviceTest` | 5 | runs the `daily_usage` schema migration on the device's own SQLite |
 | `CaptureToUiE2ETest` | 2 | closes the loop: packets off the TUN become flows, flows become a snapshot, the snapshot renders as rows |
+| `WifiIdentityDeviceTest` | 3 | asserts a device on a named Wi-Fi link, holding the permission for its name, is actually told the name — and that the link therefore carries a trust key. Cannot be a JVM test: redaction is the platform deciding what a *caller* may see, and Robolectric's shadow returns whatever the test put in it |
 | `MetricsEndpointDeviceTest` | 1 (+1 opt-in) | enables the setting and scrapes the endpoint over a real socket; `-e holdSeconds N` holds it open for an external scrape |
 | `CaptureBenchmarkTest` | opt-in | needs `-e benchUrl`; see **Capture cost** |
 
@@ -377,6 +383,11 @@ reads as an exhausted allowance on any dashboard that divides by it), and the
 truncation gauge below. The sample count varies with how many networks, apps and
 hosts are present — an idle tablet scraped over the LAN served 46 samples in
 7.6 kB. `PrometheusTest` pins the family count so this number cannot drift again.
+
+The latency series carries a `method` label (`icmp` or `tcp`), because the two
+measure different things — a handshake also times the peer's accept path — and
+a dashboard that averages them is averaging two quantities. An echo reading
+reports the host it actually probed, not the `host:port` the probe is keyed on.
 
 Per-app and per-host series are capped at 50 each, with an explicit
 `ducknetview_series_truncated` gauge saying how many were dropped; silent

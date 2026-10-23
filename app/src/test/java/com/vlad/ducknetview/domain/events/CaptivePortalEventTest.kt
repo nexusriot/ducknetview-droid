@@ -7,6 +7,8 @@ import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.watchlist.Watchlist
+import com.vlad.ducknetview.domain.model.Transport
+import com.vlad.ducknetview.domain.model.WifiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,6 +125,50 @@ class CaptivePortalEventTest {
             Watchlist.EMPTY,
         ).filter { it.kind == EventKind.NETWORK_UNTRUSTED }
         assertTrue("a standing condition reported twice: $again", again.isEmpty())
+    }
+
+    /**
+     * Trust is keyed on the SSID on purpose (`wlan0` is `wlan0` on every Wi-Fi
+     * network there has ever been), so the event has to be too — on both
+     * counts. Naming the interface made every café read `wlan0 (wifi)`, and
+     * keying the dedupe on the interface made the second café's arrival look
+     * like the first one's still standing.
+     */
+    @Test
+    fun `an untrusted network is named and deduped by the name the user marked`() {
+        val cafe = Fixtures.network(ifaceName = "wlan0", isDefault = true)
+            .copy(wifi = WifiState(ssid = "CafeOne", bssid = null, rssiDbm = -55, linkSpeedMbps = 100))
+        val other = Fixtures.network(ifaceName = "wlan0", isDefault = true)
+            .copy(wifi = WifiState(ssid = "CafeTwo", bssid = null, rssiDbm = -55, linkSpeedMbps = 100))
+        val first = Fixtures.snapshot(atMillis = 1_000L, networks = listOf(cafe))
+            .copy(untrustedDefault = true)
+        val firstOut = engine.diff(null, first, Baseline.EMPTY, Watchlist.EMPTY)
+            .filter { it.kind == EventKind.NETWORK_UNTRUSTED }
+
+        assertEquals("CafeOne", firstOut.single().subject)
+
+        val second = Fixtures.snapshot(atMillis = 2_000L, networks = listOf(other))
+            .copy(untrustedDefault = true)
+        val secondOut = engine.diff(first, second, Baseline.EMPTY, Watchlist.EMPTY)
+            .filter { it.kind == EventKind.NETWORK_UNTRUSTED }
+
+        assertEquals(
+            "a second untrusted SSID on the same interface was silenced by the first: $secondOut",
+            "CafeTwo",
+            secondOut.single().subject,
+        )
+    }
+
+    @Test
+    fun `a nameless link still gets an interface name rather than nothing`() {
+        val link = Fixtures.network(ifaceName = "eth0", transport = Transport.ETHERNET, isDefault = true)
+        val snap = Fixtures.snapshot(atMillis = 1_000L, networks = listOf(link))
+            .copy(untrustedDefault = true)
+
+        val out = engine.diff(null, snap, Baseline.EMPTY, Watchlist.EMPTY)
+            .filter { it.kind == EventKind.NETWORK_UNTRUSTED }
+
+        assertEquals("eth0", out.single().subject)
     }
 
     @Test

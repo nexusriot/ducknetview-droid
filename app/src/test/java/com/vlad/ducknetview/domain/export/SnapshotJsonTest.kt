@@ -5,7 +5,10 @@ import com.vlad.ducknetview.domain.model.CellularState
 import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.EngineMode
 import com.vlad.ducknetview.domain.model.Exposure
+import com.vlad.ducknetview.domain.model.LatencyMethod
 import com.vlad.ducknetview.domain.model.LatencySample
+import com.vlad.ducknetview.domain.model.NeighbourRow
+import com.vlad.ducknetview.domain.model.NeighbourSource
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.Proto
 import com.vlad.ducknetview.domain.model.RouteRow
@@ -15,6 +18,7 @@ import com.vlad.ducknetview.domain.model.Talker
 import com.vlad.ducknetview.domain.model.Throughput
 import com.vlad.ducknetview.domain.model.Transport
 import com.vlad.ducknetview.domain.model.WifiState
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -73,7 +77,110 @@ class SnapshotJsonTest {
         frozen = true,
         frozenLabel = "snapshot.json",
         error = null,
+        neighbours = listOf(
+            NeighbourRow(
+                address = "192.168.1.1",
+                hostname = "router.local",
+                source = NeighbourSource.BOTH,
+                rttMillis = 4,
+                services = listOf("_http._tcp"),
+                isGateway = true,
+                firstSeen = 1_700_000_000_000L,
+                lastSeen = 1_700_000_000_500L,
+            ),
+            NeighbourRow(address = "192.168.1.77", source = NeighbourSource.MDNS, rttMillis = -1),
+        ),
+        neighbourScanAt = 1_700_000_000_900L,
+        neighbourScanRunning = true,
+        neighbourSubnet = "192.168.1.0/24",
+        quota = QuotaStatus(
+            capBytes = 50_000_000_000L,
+            usedBytes = 12_345_678L,
+            cycleStartDay = 20_000L,
+            cycleEndDay = 20_030L,
+            todayDay = 20_010L,
+            mobileOnly = false,
+        ),
+        untrustedDefault = true,
     )
+
+    /**
+     * The guard for the whole class of omission, not the instance.
+     *
+     * [fullSnapshotRoundTrips] compares two whole objects and still missed
+     * six fields: `neighbours`, its three scan fields, `quota` and
+     * `untrustedDefault` were added to [NetSnapshot] and never added to the
+     * encoder *or* to the fixture above, so both sides of the comparison held
+     * the defaults and the equality passed. Measured on the M10: a snapshot
+     * exported seconds after a sweep that found 18 hosts, with a data budget
+     * configured, carried none of it — and a reader opening that file would
+     * see "Never swept" under a banner naming it.
+     *
+     * Reflection over the constructor cannot be left behind by a new field.
+     */
+    @Test
+    fun everyDeclaredFieldIsEncoded() {
+        val encoded = SnapshotJson.encode(full())
+        val missing = NetSnapshot::class.java.declaredFields
+            .map { it.name }
+            .filter { !it.contains('$') }
+            .filter { !encoded.contains("\"$it\"") }
+
+        assertTrue(
+            "NetSnapshot declares fields the exporter never writes, so a snapshot " +
+                "file silently drops them: $missing",
+            missing.isEmpty(),
+        )
+    }
+
+    @Test
+    fun theSweepSurvivesAFileRoundTrip() {
+        val decoded = SnapshotJson.decode(SnapshotJson.encode(full()))
+
+        assertEquals(2, decoded.neighbours.size)
+        assertEquals("router.local", decoded.neighbours[0].hostname)
+        assertEquals(NeighbourSource.BOTH, decoded.neighbours[0].source)
+        assertEquals("192.168.1.0/24", decoded.neighbourSubnet)
+        assertEquals(1_700_000_000_900L, decoded.neighbourScanAt)
+        // -1 is "no echo came back", not zero latency.
+        assertEquals(-1, decoded.neighbours[1].rttMillis)
+    }
+
+    @Test
+    fun aNeighbourWithNoRttKeyDecodesAsUnanswered() {
+        val decoded = SnapshotJson.decode(
+            """{"neighbours":[{"address":"10.0.0.9"}]}"""
+        )
+
+        assertEquals(-1, decoded.neighbours.single().rttMillis)
+        assertTrue(!decoded.neighbours.single().answeredPing)
+    }
+
+    @Test
+    fun theLatencyMethodSurvivesAFileRoundTrip() {
+        val decoded = SnapshotJson.decode(
+            SnapshotJson.encode(
+                full().copy(
+                    latency = listOf(
+                        LatencySample("192.168.1.1:80", "gateway", 3, true, method = LatencyMethod.ICMP),
+                    ),
+                )
+            )
+        )
+
+        assertEquals(LatencyMethod.ICMP, decoded.latency.single().method)
+    }
+
+    @Test
+    fun theBudgetSurvivesAFileRoundTrip() {
+        val decoded = SnapshotJson.decode(SnapshotJson.encode(full()))
+
+        assertEquals(50_000_000_000L, decoded.quota.capBytes)
+        assertEquals(12_345_678L, decoded.quota.usedBytes)
+        assertTrue(decoded.quota.configured)
+        assertEquals(false, decoded.quota.mobileOnly)
+        assertTrue(decoded.untrustedDefault)
+    }
 
     @Test
     fun fullSnapshotRoundTrips() {

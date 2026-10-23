@@ -159,12 +159,62 @@ class NeighboursScreenTest {
     }
 
     @Test
-    fun `a snapshot reader is not offered this device's network`() {
+    fun `a snapshot reader is never offered a sweep of this device's network`() {
         // FrozenSnapshotTest's rule, in behaviour: a sweep run while a file is
         // on screen would describe this phone's link under that file's banner.
+        // True whether or not the file itself carries one.
         show(state(rows = listOf(host()), scanAt = 9_000L, frozen = true))
-        rule.onNodeWithTag(emptyTag(EMPTY_NEIGHBOURS_FROZEN)).assertExists()
+
         rule.onNodeWithTag("neighbours:scan").assertIsNotEnabled()
+    }
+
+    @Test
+    fun `a snapshot with nothing in it is still not a reason to sweep this device`() {
+        show(state(frozen = true))
+
+        rule.onNodeWithTag("neighbours:scan").assertIsNotEnabled()
+    }
+
+    @Test
+    fun `a snapshot with no sweep in it says so`() {
+        show(state(frozen = true))
+
+        rule.onNodeWithTag(emptyTag(EMPTY_NEIGHBOURS_FROZEN)).assertExists()
+    }
+
+    /**
+     * The exporter did not write the sweep, so this screen told every reader
+     * that "a snapshot file carries no neighbour sweep" — true at the time. It
+     * writes it now (see SnapshotJsonTest), and the same sentence over a file
+     * that does carry twenty hosts would be the lie the first one wasn't. A
+     * file from the TUI still has no scan time and still gets the message.
+     */
+    @Test
+    fun `a snapshot that does carry a sweep shows it rather than denying it`() {
+        show(state(rows = listOf(host(address = "192.168.1.20")), scanAt = 9_000L, frozen = true))
+
+        rule.onNodeWithTag(emptyTag(EMPTY_NEIGHBOURS_FROZEN)).assertDoesNotExist()
+        rule.onNodeWithTag("neighbour:192.168.1.20").assertExists()
+    }
+
+    /**
+     * A frozen file's rows must not be gated on *this* device's link: the file
+     * may have been taken on an IPv6-only or cellular link, or on a network
+     * this phone has never seen.
+     */
+    @Test
+    fun `a snapshot's sweep is shown even when this device has no prefix to sweep`() {
+        show(
+            state(
+                rows = listOf(host(address = "192.168.1.21")),
+                scanAt = 9_000L,
+                addresses = listOf("fe80::1/64"),
+                frozen = true,
+            )
+        )
+
+        rule.onNodeWithTag("neighbour:192.168.1.21").assertExists()
+        rule.onNodeWithTag(emptyTag(EMPTY_NEIGHBOURS_NO_V4)).assertDoesNotExist()
     }
 
     @Test

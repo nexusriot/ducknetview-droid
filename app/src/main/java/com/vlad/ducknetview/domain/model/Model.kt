@@ -448,4 +448,26 @@ data class LatencySample(
     val history: List<Float> = emptyList(),
     val note: String? = null,
     val method: LatencyMethod = LatencyMethod.TCP,
-)
+) {
+    /**
+     * The endpoint this reading actually came from.
+     *
+     * [target] is the probe's identity and keys its history, so it keeps the
+     * `host:port` form across a method change rather than resetting the
+     * sparkline. But the gateway probe synthesises that port — it prefers an
+     * echo, which never touches a port at all — so reporting [target] as the
+     * thing that was probed names a port nobody asked about and nobody
+     * contacted. The screen never showed it (it renders [label]); the
+     * Prometheus exporter did, as `target="192.168.88.1:80"` beside a figure
+     * taken by ICMP, which is exactly the blending of two different
+     * measurements that DESIGN §5 says must not happen.
+     */
+    val probedEndpoint: String
+        get() = when (method) {
+            LatencyMethod.ICMP -> target.trim().let { t ->
+                if (t.startsWith("[")) t.substringBefore("]").removePrefix("[")
+                else t.substringBeforeLast(':', t)
+            }
+            LatencyMethod.TCP -> target
+        }
+}

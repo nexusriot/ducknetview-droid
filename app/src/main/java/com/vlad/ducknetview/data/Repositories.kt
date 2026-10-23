@@ -14,7 +14,6 @@ import com.vlad.ducknetview.domain.model.DomainObservation
 import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventLevel
-import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.usage.DailyUsage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -281,9 +280,12 @@ class DomainRepository(
                 firstSeen = minOf(existing.firstSeen, o.at),
                 lastSeen = maxOf(existing.lastSeen, o.at),
                 // A DNS sighting is the stronger statement — it is what the
-                // device asked its resolver — so a later SNI sighting of the
-                // same name never downgrades the row's attribution.
-                source = if (existing.source == NameSource.DNS) NameSource.DNS else o.source,
+                // device asked its resolver — so a later handshake sighting of
+                // the same name never downgrades the row's attribution. Phrased
+                // against `fromHandshake` rather than `== DNS` so the precedence
+                // rule survives a new source being added: anything read off a
+                // handshake yields to a DNS answer, whatever it is called.
+                source = if (existing.source.fromHandshake) o.source else existing.source,
                 addresses = (existing.addresses + o.addresses).distinct().take(MAX_ADDRESSES),
             )
         }

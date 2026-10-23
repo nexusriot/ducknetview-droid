@@ -30,6 +30,53 @@ class PortScannerTest {
         assertEquals(ports.distinct().size, ports.size)
     }
 
+    /**
+     * Measured on the M10. The metrics endpoint had been moved to 9191, which
+     * is not in the fast list, so the default scan knocked on 300-odd ports and
+     * not on the one this device was definitely serving: the Services screen
+     * said "No listeners found … the expected result for a phone that runs no
+     * server" while a scrape from another machine on the LAN returned 139 lines
+     * of metrics. The app's own endpoint is the one listener it does not have
+     * to guess at.
+     */
+    @Test
+    fun `the app's own metrics port joins the fast window when it is off the list`() {
+        val base = PortScanner.ports(full = false)
+        assertFalse("pick a port the fast list does not already cover", base.contains(9191))
+
+        val ports = PortScanner.ports(full = false, extra = listOf(9191))
+
+        assertTrue("the app's own listening port was left out of its own scan", ports.contains(9191))
+        assertEquals(base.size + 1, ports.size)
+        assertEquals(ports.sorted(), ports)
+    }
+
+    @Test
+    fun `a port already in the window is not scanned twice`() {
+        val base = PortScanner.ports(full = false)
+        assertTrue("9187 is the default metrics port and should be covered", base.contains(9187))
+
+        val ports = PortScanner.ports(full = false, extra = listOf(9187))
+
+        assertEquals(base, ports)
+    }
+
+    @Test
+    fun `an out-of-range extra port is dropped rather than probed`() {
+        val ports = PortScanner.ports(full = false, extra = listOf(0, -1, 70000))
+
+        assertEquals(PortScanner.ports(full = false), ports)
+        assertTrue(ports.all { it in 1..PortScanner.MAX_PORT })
+    }
+
+    @Test
+    fun `the full sweep already covers every extra port`() {
+        assertEquals(
+            PortScanner.ports(full = true),
+            PortScanner.ports(full = true, extra = listOf(9191, 9187)),
+        )
+    }
+
     @Test
     fun `every fast port is a legal TCP port`() {
         assertTrue(PortScanner.ports(full = false).all { it in 1..PortScanner.MAX_PORT })

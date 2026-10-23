@@ -14,10 +14,27 @@ package com.vlad.ducknetview.domain.model
  * invisible on this screen until the Initial packet could be read, and which
  * is still the first thing to suspect when a row looks absent.
  */
-enum class NameSource(val label: String) {
-    DNS("DNS"),
-    SNI("SNI"),
-    QUIC("QUIC"),
+/**
+ * @property label the column badge.
+ * @property provenance how the event log words it. On the enum rather than at
+ *   the call site because the call site was `if (source == SNI) "seen in TLS
+ *   SNI" else "resolved by DNS"` — written when there were two sources, and
+ *   never widened when [QUIC] arrived. Measured on the M10: every name learnt
+ *   from a QUIC Initial was recorded in the permanent event log, the events
+ *   CSV and the alert webhook as "resolved by DNS", including three the
+ *   instrumented suite had just put on the wire itself with no DNS answer
+ *   anywhere near them. On a device with Private DNS — the case QUIC peeking
+ *   exists for — that is every name the app knows. A `when` over the enum
+ *   makes the compiler ask the question the next time a source is added.
+ */
+enum class NameSource(val label: String, val provenance: String) {
+    DNS("DNS", "resolved by DNS"),
+    SNI("SNI", "seen in TLS SNI"),
+    QUIC("QUIC", "seen in a QUIC Initial"),
+    ;
+
+    /** Whether the name was read off the wire rather than from a DNS answer. */
+    val fromHandshake: Boolean get() = this != DNS
 }
 
 /** One sighting of a name, as the capture engine observes it. */

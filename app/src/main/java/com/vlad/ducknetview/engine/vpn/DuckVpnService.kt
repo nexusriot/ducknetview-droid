@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.vlad.ducknetview.domain.net.OwnTunnel
 import com.vlad.ducknetview.domain.model.BlockedAttempt
 import com.vlad.ducknetview.domain.model.DomainObservation
 import com.vlad.ducknetview.domain.model.NameSource
@@ -491,8 +492,10 @@ class DuckVpnService : VpnService() {
         const val ACTION_STOP = "com.vlad.ducknetview.STOP_ENGINE"
         const val SESSION = "ducknetview"
         const val MTU = 1500
-        const val TUN_V4 = "10.215.173.1"
-        const val TUN_V6 = "fd00:6475:636b::1"
+        // One copy, shared with the event layer, which has to recognise this
+        // tunnel as ours rather than reporting it as a network outage.
+        const val TUN_V4 = OwnTunnel.V4
+        const val TUN_V6 = OwnTunnel.V6
         private const val EXPIRY_TICK_MS = 5000L
         private const val UDP_IDLE_MS = 60_000L
         private const val TCP_IDLE_MS = 600_000L

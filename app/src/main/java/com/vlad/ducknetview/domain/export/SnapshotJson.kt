@@ -7,7 +7,10 @@ import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.EngineMode
 import com.vlad.ducknetview.domain.model.Exposure
+import com.vlad.ducknetview.domain.model.LatencyMethod
 import com.vlad.ducknetview.domain.model.LatencySample
+import com.vlad.ducknetview.domain.model.NeighbourRow
+import com.vlad.ducknetview.domain.model.NeighbourSource
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.model.Proto
@@ -19,6 +22,7 @@ import com.vlad.ducknetview.domain.model.Talker
 import com.vlad.ducknetview.domain.model.Throughput
 import com.vlad.ducknetview.domain.model.Transport
 import com.vlad.ducknetview.domain.model.WifiState
+import com.vlad.ducknetview.domain.usage.QuotaStatus
 
 /**
  * The TUI's `--json` / `--from snapshot` interchange format.
@@ -58,6 +62,10 @@ object SnapshotJson {
         "services" to s.services.map(::serviceToMap),
         "serviceScanAt" to s.serviceScanAt,
         "serviceScanRunning" to s.serviceScanRunning,
+        "neighbours" to s.neighbours.map(::neighbourToMap),
+        "neighbourScanAt" to s.neighbourScanAt,
+        "neighbourScanRunning" to s.neighbourScanRunning,
+        "neighbourSubnet" to s.neighbourSubnet,
         "total" to linkedMapOf<String, Any?>("rxBps" to s.total.rxBps, "txBps" to s.total.txBps),
         "totalPeakRx" to s.totalPeakRx,
         "totalPeakTx" to s.totalPeakTx,
@@ -79,6 +87,8 @@ object SnapshotJson {
             "watchlistHits" to s.security.watchlistHits,
             "offBaseline" to s.security.offBaseline,
         ),
+        "quota" to quotaToMap(s.quota),
+        "untrustedDefault" to s.untrustedDefault,
         "frozen" to s.frozen,
         "frozenLabel" to s.frozenLabel,
         "error" to s.error,
@@ -102,6 +112,10 @@ object SnapshotJson {
             services = objects(m, "services").map(::serviceFromMap),
             serviceScanAt = long(m, "serviceScanAt"),
             serviceScanRunning = bool(m, "serviceScanRunning"),
+            neighbours = objects(m, "neighbours").map(::neighbourFromMap),
+            neighbourScanAt = long(m, "neighbourScanAt"),
+            neighbourScanRunning = bool(m, "neighbourScanRunning"),
+            neighbourSubnet = str(m, "neighbourSubnet"),
             total = Throughput(long(total, "rxBps"), long(total, "txBps")),
             totalPeakRx = long(m, "totalPeakRx"),
             totalPeakTx = long(m, "totalPeakTx"),
@@ -123,6 +137,8 @@ object SnapshotJson {
                 watchlistHits = int(security, "watchlistHits"),
                 offBaseline = int(security, "offBaseline"),
             ),
+            quota = quotaFromMap(obj(m, "quota")),
+            untrustedDefault = bool(m, "untrustedDefault"),
             frozen = bool(m, "frozen"),
             frozenLabel = strOrNull(m, "frozenLabel"),
             error = strOrNull(m, "error"),
@@ -380,6 +396,10 @@ object SnapshotJson {
         "ok" to l.ok,
         "history" to l.history,
         "note" to l.note,
+        // Which method produced the figure. A TCP handshake also times the
+        // peer's accept path, so a reader that cannot tell the two apart is
+        // reading two different quantities as one (DESIGN §5).
+        "method" to l.method.name,
     )
 
     private fun latencyFromMap(m: Map<String, Any?>): LatencySample = LatencySample(
@@ -389,6 +409,51 @@ object SnapshotJson {
         ok = bool(m, "ok"),
         history = floats(m, "history"),
         note = strOrNull(m, "note"),
+        method = enum(m, "method", LatencyMethod.TCP),
+    )
+
+    private fun neighbourToMap(n: NeighbourRow): Map<String, Any?> = linkedMapOf(
+        "address" to n.address,
+        "hostname" to n.hostname,
+        "source" to n.source.name,
+        "rttMillis" to n.rttMillis,
+        "services" to n.services,
+        "isSelf" to n.isSelf,
+        "isGateway" to n.isGateway,
+        "firstSeen" to n.firstSeen,
+        "lastSeen" to n.lastSeen,
+    )
+
+    private fun neighbourFromMap(m: Map<String, Any?>): NeighbourRow = NeighbourRow(
+        address = str(m, "address"),
+        hostname = str(m, "hostname"),
+        source = enum(m, "source", NeighbourSource.PING),
+        // -1 is "no echo came back", which is not the same as zero latency, so
+        // a file with no key must not decode to a host that answered instantly.
+        rttMillis = int(m, "rttMillis", -1),
+        services = strings(m, "services"),
+        isSelf = bool(m, "isSelf"),
+        isGateway = bool(m, "isGateway"),
+        firstSeen = long(m, "firstSeen"),
+        lastSeen = long(m, "lastSeen"),
+    )
+
+    private fun quotaToMap(q: QuotaStatus): Map<String, Any?> = linkedMapOf(
+        "capBytes" to q.capBytes,
+        "usedBytes" to q.usedBytes,
+        "cycleStartDay" to q.cycleStartDay,
+        "cycleEndDay" to q.cycleEndDay,
+        "todayDay" to q.todayDay,
+        "mobileOnly" to q.mobileOnly,
+    )
+
+    private fun quotaFromMap(m: Map<String, Any?>): QuotaStatus = QuotaStatus(
+        capBytes = long(m, "capBytes"),
+        usedBytes = long(m, "usedBytes"),
+        cycleStartDay = long(m, "cycleStartDay"),
+        cycleEndDay = long(m, "cycleEndDay"),
+        todayDay = long(m, "todayDay"),
+        mobileOnly = bool(m, "mobileOnly", true),
     )
 
     private fun writeValue(v: Any?, sb: StringBuilder) {

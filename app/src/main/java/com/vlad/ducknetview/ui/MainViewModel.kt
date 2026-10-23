@@ -672,7 +672,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
     override fun exportCurrentTable() {
         val s = state.value
         val csv = when (tabFlow.value) {
-            Tab.CONNECTIONS -> Csv.conns(s.conns, s.snapshot.atMillis)
+            // The Connections screen has three modes and this exported the live
+            // table in all three: a screen reading "8 closed" wrote fourteen
+            // `established` rows, and "4 hosts" wrote the flat table. The file
+            // has to be the table that is on screen, which is what picks it.
+            Tab.CONNECTIONS -> when {
+                s.settings.groupByHost -> Csv.groups(s.groups)
+                s.settings.showClosed -> Csv.closed(s.closed)
+                else -> Csv.conns(s.conns, s.snapshot.atMillis)
+            }
             Tab.APPS -> Csv.apps(s.apps)
             Tab.SERVICES -> Csv.services(s.services)
             Tab.DOMAINS -> Csv.domains(s.domains)
@@ -684,7 +692,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             status("this screen has no table to export")
             return
         }
-        share("ducknetview_${tabFlow.value.route}", "text/csv", csv)
+        // Three tables share one screen, so three files would otherwise share
+        // one name and differ only in their columns.
+        val suffix = when {
+            tabFlow.value != Tab.CONNECTIONS -> ""
+            s.settings.groupByHost -> "_hosts"
+            s.settings.showClosed -> "_closed"
+            else -> ""
+        }
+        share("ducknetview_${tabFlow.value.route}$suffix", "text/csv", csv)
     }
 
     override fun exportSnapshotJson() {

@@ -4,6 +4,7 @@ import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.EngineMode
 import com.vlad.ducknetview.domain.model.Exposure
+import com.vlad.ducknetview.domain.model.LatencySample
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.model.Scope
 import java.util.Locale
@@ -186,17 +187,25 @@ object Prometheus {
         b.family("latency_seconds", "Round-trip time to a probe target (only successful probes).", GAUGE)
         for (p in samples) {
             if (!p.ok || p.millis < 0) continue
-            b.point("latency_seconds", num(p.millis / 1000.0), latencyLabels(p.target, p.label))
+            b.point("latency_seconds", num(p.millis / 1000.0), latencyLabels(p))
         }
         b.family("latency_up", "1 when the last probe to the target succeeded.", GAUGE)
         for (p in samples) {
-            b.point("latency_up", num(if (p.ok) 1L else 0L), latencyLabels(p.target, p.label))
+            b.point("latency_up", num(if (p.ok) 1L else 0L), latencyLabels(p))
         }
     }
 
-    private fun latencyLabels(target: String, label: String): List<Pair<String, String>> = listOf(
-        "target" to target.ifBlank { UNKNOWN },
-        "name" to label.ifBlank { target.ifBlank { UNKNOWN } },
+    /**
+     * A TCP handshake also pays for the peer's accept path and an echo does
+     * not, so a dashboard that averages the two is averaging two different
+     * quantities. The screen says which method produced each figure; this used
+     * to say nothing, and named `host:80` for readings that never touched a
+     * port — see [LatencySample.probedEndpoint].
+     */
+    private fun latencyLabels(p: LatencySample): List<Pair<String, String>> = listOf(
+        "target" to p.probedEndpoint.ifBlank { UNKNOWN },
+        "name" to p.label.ifBlank { p.probedEndpoint.ifBlank { UNKNOWN } },
+        "method" to p.method.name.lowercase(),
     )
 
     private fun rankedApps(s: NetSnapshot): List<AppRow> = s.apps.sortedWith(

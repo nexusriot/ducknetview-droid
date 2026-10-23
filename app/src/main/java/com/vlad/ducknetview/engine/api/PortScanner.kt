@@ -38,17 +38,20 @@ class PortScanner {
     suspend fun scan(
         localAddrs: List<String>,
         full: Boolean,
+        extraPorts: Collection<Int> = emptyList(),
         onProgress: (Int, Int) -> Unit = { _, _ -> },
-    ): List<ServiceRow> = scanAt(localAddrs, full, System.currentTimeMillis(), onProgress)
+    ): List<ServiceRow> =
+        scanAt(localAddrs, full, System.currentTimeMillis(), extraPorts, onProgress)
 
     suspend fun scanAt(
         localAddrs: List<String>,
         full: Boolean,
         now: Long,
+        extraPorts: Collection<Int> = emptyList(),
         onProgress: (Int, Int) -> Unit = { _, _ -> },
     ): List<ServiceRow> = scanPorts(
         addrs = targetAddrs(localAddrs),
-        ports = ports(full),
+        ports = ports(full, extraPorts),
         timeoutMs = if (full) FULL_TIMEOUT_MS else FAST_TIMEOUT_MS,
         now = now,
         onProgress = onProgress,
@@ -138,8 +141,28 @@ class PortScanner {
             return s
         }
 
-        internal fun ports(full: Boolean): List<Int> =
-            if (full) (1..MAX_PORT).toList() else COMMON_PORTS
+        /**
+         * The ports a scan knocks on.
+         *
+         * [extra] is for listeners this device is *known* to have rather than
+         * guessed at — today that is this app's own Prometheus endpoint. The
+         * window is otherwise a fixed list, and the moment the user moved that
+         * endpoint off its default port it fell outside it: measured on the
+         * M10, the app served an unauthenticated scrape on 9191 to the whole
+         * LAN while its own Services screen said "No listeners found … the
+         * expected result for a phone that runs no server" and the Overview
+         * "Exposed" tile read 0. A full-range scan found it immediately. The
+         * one listening socket this app does not have to guess about is its
+         * own, so leaving it out of the default answer was the one omission
+         * with no excuse.
+         */
+        internal fun ports(full: Boolean, extra: Collection<Int> = emptyList()): List<Int> {
+            val base = if (full) (1..MAX_PORT).toList() else COMMON_PORTS
+            val added = extra.filter { it in 1..MAX_PORT && it !in base }
+            // Sorted, like the fast list itself: the progress count walks this
+            // in order and a tail-appended port would scan out of sequence.
+            return if (added.isEmpty()) base else (base + added).distinct().sorted()
+        }
 
         internal fun widest(a: Exposure, b: Exposure): Exposure =
             if (rank(b) > rank(a)) b else a

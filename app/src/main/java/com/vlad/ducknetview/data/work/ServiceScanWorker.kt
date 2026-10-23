@@ -49,6 +49,11 @@ class ServiceScanWorker(
             PortScanner().scan(
                 localAddrs = LocalAddresses.of(applicationContext),
                 full = settings.scanFullRange,
+                // The same window the foreground scan uses. Two scan paths that
+                // look at different port sets would have the background check
+                // call a listener gone that the screen still lists, and never
+                // alert on the one port this device is certain about.
+                extraPorts = if (settings.metricsEnabled) listOf(settings.metricsPort) else emptyList(),
             )
         } catch (e: CancellationException) {
             throw e

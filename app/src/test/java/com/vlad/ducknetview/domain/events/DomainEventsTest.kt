@@ -6,6 +6,7 @@ import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -93,6 +94,48 @@ class DomainEventsTest {
     @Test
     fun `nothing new produces nothing`() {
         assertTrue(DomainEvents.of(emptyList(), none, at = 1L).isEmpty())
+    }
+
+    /**
+     * The wording used to be `if (source == SNI) "seen in TLS SNI" else
+     * "resolved by DNS"`, which was written when SNI was the only alternative
+     * to DNS. Read off the M10's own event table afterwards:
+     * `new_domain blog.cloudflare.com · resolved by DNS` for a name the
+     * Domains screen two taps away labelled QUIC, and the same for
+     * `split-hello.quic.test`, which the instrumented suite had just sent as a
+     * QUIC handshake with no DNS answer in it at all. The permanent log, the
+     * events CSV and the alert webhook all carried the false claim.
+     */
+    @Test
+    fun `a name read from a QUIC Initial is not logged as resolved by DNS`() {
+        val events = DomainEvents.of(listOf(row("blog.cloudflare.com", NameSource.QUIC)), none, at = 1L)
+
+        val detail = events.single().detail
+        assertFalse("a QUIC name was credited to DNS", detail.contains("resolved by DNS"))
+        assertTrue(detail.contains("QUIC"))
+    }
+
+    /**
+     * The generalisation: no source may fall through to another source's
+     * wording. A new constant must change this test, not silently inherit
+     * whatever the `else` branch happened to say.
+     */
+    @Test
+    fun `every name source logs its own provenance`() {
+        for (source in NameSource.entries) {
+            val detail = DomainEvents.of(listOf(row("example.com", source)), none, at = 1L)
+                .single().detail
+            assertTrue(
+                "$source is logged as '${detail}', which does not state where the name came from",
+                detail.contains(source.provenance),
+            )
+            for (other in NameSource.entries.filter { it != source }) {
+                assertFalse(
+                    "$source is logged with $other's wording",
+                    detail.contains(other.provenance),
+                )
+            }
+        }
     }
 
     @Test

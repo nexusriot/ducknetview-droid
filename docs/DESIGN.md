@@ -418,6 +418,127 @@ device to validate.
   now `exec`ed so `$!` is the process that must die, the port is checked before
   binding, and the blob is fetched once before three rounds are spent on it.
 
+## 7b. Third hardware round: what the platform redacts, and what was never widened
+
+A third pass over the real device, 2026-10-23, against the 44-test instrumented
+suite passing. Seven defects, and the suite caught none of them. This time the
+reason was not that it was closed (§8b) but that five of the seven were the
+*same shape*: a vocabulary grew and a hand-written consumer of it did not.
+
+**The app could not name the Wi-Fi network it was on.** `WifiSource` reads two
+sources and chained them with `?:` — which falls through on a *missing* source
+and not on a *redacted* one. On API 31+ the authoritative one, the `WifiInfo`
+hanging off `ConnectivityManager.getNetworkCapabilities()` read synchronously,
+is **always** redacted: it has no caller identity to run the location check
+against. Measured on the M10 with `ACCESS_FINE_LOCATION` granted, location
+services on and the Activity in front, side by side in one call:
+
+| source | SSID | BSSID |
+|---|---|---|
+| `getNetworkCapabilities().transportInfo` | `<unknown ssid>` | `02:00:00:00:00:00` |
+| `WifiManager.getConnectionInfo()` | `"Hystax"` | the real one |
+| callback + `FLAG_INCLUDE_LOCATION_INFO` | `"Hystax"` | the real one |
+
+So the first source always answered, the second was never consulted, and the
+Links screen rendered `SSID —`. The cost was not the blank field. **Network
+trust is keyed on the SSID**, deliberately (`wlan0` is `wlan0` everywhere, and
+netId flaps — round six), so `NetworkTrust.keyOf` returned null for every Wi-Fi
+link: the Links screen drew no trust buttons at all, nothing the user marked
+could be remembered, and the whole round-seven trust feature was inert on every
+device that runs the location check. The fix merges the sources — the first
+wins the radio numbers, the first that *has* a name wins the name. Verified:
+`SSID Hystax` and the Trust / Untrusted buttons now render, and marking the
+network writes `wifi:Hystax` to DataStore. `WifiIdentityDeviceTest` is the
+guard, and it cannot be a JVM test: redaction is the platform deciding what a
+*caller* may see, and Robolectric's shadow returns whatever the test put in it.
+
+**Four of those vocabularies had grown, and their consumers had not** (the
+fifth, the scan's port window, is below). This is §8's pattern — a declared
+thing with no producer — inverted: a producer with consumers that predate it.
+None of them is a compile error.
+
+- **`NameSource` gained `QUIC` and the event log still said "resolved by
+  DNS".** The wording was `if (source == SNI) "seen in TLS SNI" else "resolved
+  by DNS"`, written when there were two sources. Read straight out of the
+  device's own event table: `new_domain blog.cloudflare.com · resolved by DNS`
+  for a name the Domains screen two taps away labelled QUIC — and the same for
+  `split-hello.quic.test`, which the instrumented suite had itself put on the
+  wire as a QUIC handshake with no DNS answer in it. The permanent log, the
+  events CSV and the alert webhook all carried the false claim, and on a device
+  with Private DNS — the case QUIC peeking exists for — that is every name the
+  app knows. The provenance now lives on the enum. Two smaller instances of the
+  same omission went with it: the Domains headline counted SNI alone and read
+  "11 names · 1 from SNI" over ten QUIC rows, and the source badge was tinted
+  for SNI only. `arch/NameSourcesReportedTest` forbids singling out a constant.
+- **`NetSnapshot` gained six fields the exporter never wrote.** `neighbours`,
+  its three sweep fields, `quota` and `untrustedDefault`. A snapshot exported
+  seconds after a sweep that found twenty hosts carried none of them.
+  `fullSnapshotRoundTrips` compares two whole objects and still missed it,
+  because **the fixture was never widened either** — both sides held the
+  defaults and the equality passed. The guard is now reflection over the
+  constructor, which a new field cannot be left out of. `LatencySample.method`
+  was missing from the file too.
+- **The Connections Share button exported a table nobody was looking at.** That
+  screen renders one of three tables and `exportCurrentTable` called
+  `Csv.conns` for all three: a screen reading "8 closed" produced fourteen
+  `established` rows with no close time, lifetime or final totals, and "4 hosts"
+  produced the flat table — against `Csv`'s own first line, "every table exports
+  the view the user is looking at". `Csv.closed` and `Csv.groups` did not exist.
+  `arch/ExportsTheVisibleTableTest` asserts the export branches on every mode
+  flag the screen branches on, and that no `Csv` table is unreachable.
+- **The Prometheus exporter blended the two latency methods.** DESIGN §5 says
+  they are "labelled rather than blended, because they measure different
+  things"; the screen labels them and the scrape did not, reporting
+  `target="192.168.88.1:80"` for a reading taken by ICMP echo that never touched
+  a port. There is a `method` label now, and an echo reports the host it
+  actually probed.
+
+**The app ran a server its own exposure screen could not see.** The Services
+self-scan knocks on a fixed list of common ports, and the metrics endpoint had
+been moved to 9191, which is not on it: the screen said "No listeners found …
+the expected result for a phone that runs no server" while a scrape from another
+machine on the LAN returned 139 lines of metrics, and the Overview "Exposed"
+tile read 0. A full-range scan found it at once. The one listening socket this
+app never has to guess about is its own, so both scan paths — the button and the
+background worker that raises off-baseline alerts — now add it to the window,
+and `arch/ScanWindowsAgreeTest` keeps the two paths looking at the same ports.
+The default port, 9187, *is* on the common list, so this only ever bit a user
+who moved the endpoint — which is exactly the user who went looking for it on
+the screen that says what this device is exposing.
+
+**Round six's fabricated outage survived for the one link this app owns.** That
+round fixed the flapping-netId case and recorded it as "it fabricated Wi-Fi
+outages, and caused them itself". The capture engine is a `VpnService`, so while
+it runs the platform publishes `tun0` and this app monitors it like any other
+link: every press of the capture switch wrote `INFO network_up tun0 (vpn)
+appeared` and every release wrote **`WARN network_down tun0 (vpn) vanished`** —
+a warning, so a notification and a webhook POST — one line away from the
+`engine_stopped` entry that already said exactly that. Five such pairs
+accumulated in an hour of testing. `OwnTunnel` recognises the tunnel by the two
+addresses `DuckVpnService` configures (shared constants, not a second copy:
+`tun0` is `tun0` for every VPN, as `wlan0` is), and the event layer tracks it
+without reporting on it. Somebody else's VPN dropping keeps its event — it is
+the one externally caused failure that ends capture.
+
+Also corrected: a field holding twenty digits was refused as "not a whole
+number", which it plainly is. The refusal was right and the reason was not, in
+the one function whose entire job is saying why something was refused. And
+`NETWORK_UNTRUSTED` named the interface — `wlan0 (wifi)`, which every café on
+earth reads as — and deduped on it too, so arriving on a second untrusted SSID
+was swallowed as "already reported". It now uses the trust key and label, the
+same identity the feature is built on.
+
+**What this round says about the guards.** Five of the seven faults are one
+sentence: *a set grew and a hand-written reader of it did not.* `NameSource`,
+`NetSnapshot`'s fields, the Connections screen's modes, the latency methods, the
+scan's port window. `EventKindsProducedTest` and `UiActionsWiredTest` already
+encode that rule for two vocabularies; this round added it for four more, and in
+each case the guard was verified red against the unfixed tree before being kept.
+The lesson generalises past any one of them: **an `if/else` over a set that can
+grow is a latent fault, and the compiler will never ask about it.** An
+exhaustive `when`, a property on the enum, or reflection over the declaration
+will.
+
 ## 8. Recurring defect class, and the guard
 
 Three times, a feature was fully implemented, documented, and reachable from

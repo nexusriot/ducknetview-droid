@@ -1,11 +1,13 @@
 package com.vlad.ducknetview.domain.export
 
 import com.vlad.ducknetview.domain.model.AppRow
+import com.vlad.ducknetview.domain.model.ClosedConn
 import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.NeighbourRow
 import com.vlad.ducknetview.domain.model.ServiceRow
+import com.vlad.ducknetview.ui.HostGroup
 
 /** RFC 4180 CSV. Every table exports the view the user is looking at. */
 object Csv {
@@ -117,4 +119,50 @@ object Csv {
 
     fun events(rows: List<Event>): String =
         of(listOf("at", "level", "kind", "subject", "detail"), rows.map { it.toCsvRow() })
+
+    /**
+     * Retired flows, with the numbers only a closed socket has.
+     *
+     * The Connections screen has three modes and the Share button exported the
+     * live table in all of them: measured on the M10, a screen reading "8
+     * closed" exported fourteen rows every one of which said `established`,
+     * with no close time, no lifetime and no final totals anywhere in the file.
+     * The counters here are the lifetime ones — for a closed socket those are
+     * the true totals, which is the whole reason the closed table exists.
+     */
+    fun closed(rows: List<ClosedConn>): String = of(
+        listOf(
+            "proto", "local", "remote", "resolved", "service", "scope", "state",
+            "uid", "app", "package", "rx_bytes", "tx_bytes", "rtt_ms",
+            "closed_at", "lifetime_ms", "network", "watchlisted",
+        ),
+        rows.map { c ->
+            val r = c.row
+            listOf(
+                r.proto.toString(), r.local, r.remote, r.resolvedHost ?: "", r.service,
+                r.scope.toString(), r.state.toString(), r.uid.toString(), r.appLabel,
+                r.packageName, c.finalRx.toString(), c.finalTx.toString(),
+                r.rttMillis.toString(), c.closedAt.toString(), c.lifetimeMillis.toString(),
+                r.network, r.watchlisted.toString(),
+            )
+        },
+    )
+
+    /** One row per remote host, as the grouped view folds them. */
+    fun groups(rows: List<HostGroup>): String = of(
+        listOf(
+            "host", "display", "conns", "scope", "rx_bps", "tx_bps",
+            "rx_bytes", "tx_bytes", "states", "apps", "watchlisted",
+        ),
+        rows.map { g ->
+            listOf(
+                g.host, g.display, g.connCount.toString(), g.scope.toString(),
+                g.rxBps.toString(), g.txBps.toString(),
+                g.rxTotal.toString(), g.txTotal.toString(),
+                g.states.entries.joinToString(" ") { "${it.key}=${it.value}" },
+                g.apps.joinToString(" "),
+                g.watchlisted.toString(),
+            )
+        },
+    )
 }

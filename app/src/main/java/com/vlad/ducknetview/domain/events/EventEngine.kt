@@ -10,6 +10,8 @@ import com.vlad.ducknetview.domain.model.NetworkRow
 import com.vlad.ducknetview.domain.model.Scope
 import com.vlad.ducknetview.domain.model.ServiceRow
 import com.vlad.ducknetview.domain.net.IpScope
+import com.vlad.ducknetview.domain.net.NetworkTrust
+import com.vlad.ducknetview.domain.net.OwnTunnel
 import com.vlad.ducknetview.domain.net.Trust
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 
@@ -236,13 +238,20 @@ class EventEngine(
             return
         }
         val def = cur.networks.firstOrNull { it.isDefault && !it.isNoise } ?: return
-        val key = linkKey(def)
+        // Keyed on the trust key, not the interface: trust is per SSID, so two
+        // different untrusted networks both key as `wifi/wlan0` and the second
+        // arrival would be swallowed as "already reported".
+        val key = NetworkTrust.keyOf(def) ?: linkKey(def)
         if (untrustedReported == key) return
         untrustedReported = key
         rec.add(
             EventLevel.WARN,
             EventKind.NETWORK_UNTRUSTED,
-            label(def),
+            // The network the user marked, by the name they marked it under.
+            // `label()` gives "wlan0 (wifi)", which is right for the topology
+            // events and useless here: every café on earth reads the same, so
+            // the log could not say which network a line was about.
+            NetworkTrust.labelOf(def),
             detail(
                 when (def.trust) {
                     Trust.UNTRUSTED -> "marked untrusted"
@@ -277,6 +286,14 @@ class EventEngine(
             // Back before it was ever called down, so its absence was a
             // re-registration rather than an outage: start the count again.
             missingTicks.remove(key)
+            // This app's own capture tunnel is tracked but never reported on:
+            // its arrival and departure are the engine switch being pressed,
+            // and ENGINE_STARTED / ENGINE_STOPPED already say that. See
+            // [OwnTunnel].
+            if (OwnTunnel.isOurs(n)) {
+                knownLinks[key] = n
+                continue
+            }
             val p = knownLinks[key]
             when {
                 p == null -> rec.add(
@@ -322,6 +339,8 @@ class EventEngine(
             missingTicks.remove(key)
             // Rejoining the same captive network later is news again.
             portalLinks.remove(key)
+            // Our own tunnel going away is the engine stopping, not an outage.
+            if (OwnTunnel.isOurs(gone)) continue
             rec.add(EventLevel.WARN, EventKind.NETWORK_DOWN, label(gone), "vanished")
         }
     }

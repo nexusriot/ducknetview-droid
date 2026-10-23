@@ -229,11 +229,25 @@ fun DomainsScreen(
     }
 }
 
+/**
+ * The headline count, and where the names came from.
+ *
+ * It used to count [NameSource.SNI] alone, so on the M10 it read "11 names · 1
+ * from SNI" over a table of ten QUIC rows — crediting the smaller source and
+ * saying nothing about the one that had produced almost everything on screen.
+ * Every non-DNS source is named now, in enum order, so adding a source cannot
+ * leave the summary quietly behind again.
+ */
 private fun summary(state: UiState): String {
     val total = state.domains.size
-    val sni = state.domains.count { it.source == NameSource.SNI }
     val names = "$total ${if (total == 1) "name" else "names"}"
-    return if (sni > 0) "$names · $sni from SNI" else names
+    val byHandshake = NameSource.entries
+        .filter { it.fromHandshake }
+        .mapNotNull { source ->
+            val n = state.domains.count { it.source == source }
+            if (n > 0) "$n from ${source.label}" else null
+        }
+    return if (byHandshake.isEmpty()) names else (listOf(names) + byHandshake).joinToString(" · ")
 }
 
 @Composable
@@ -296,7 +310,10 @@ private fun DomainRowItem(
         Text(
             text = row.source.label,
             style = MaterialTheme.typography.labelSmall,
-            color = if (row.source == NameSource.SNI) DuckColors.Info else MaterialTheme.colorScheme.onSurfaceVariant,
+            // Any name read off a handshake, not SNI alone: a QUIC badge is the
+            // same "no DNS answer was visible" story and used to render as plainly
+            // as a DNS row, which on a Private DNS device is most of the screen.
+            color = if (row.source.fromHandshake) DuckColors.Info else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("domain:source:${row.name}:${row.uid}"),
         )
         Spacer(Modifier.width(8.dp))

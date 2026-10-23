@@ -4,7 +4,6 @@ import com.vlad.ducknetview.domain.model.DomainRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
-import com.vlad.ducknetview.domain.model.NameSource
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 
 /**
@@ -53,7 +52,7 @@ object DomainEvents {
 
     private fun detail(row: DomainRow, watched: Boolean): String {
         val parts = ArrayList<String>(4)
-        parts += if (row.source == NameSource.SNI) "seen in TLS SNI" else "resolved by DNS"
+        parts += row.source.provenance
         if (row.appLabel.isNotEmpty()) parts += row.appLabel
         if (row.addresses.isNotEmpty()) parts += row.addresses.take(3).joinToString(" ")
         if (watched) parts += "on the watchlist"

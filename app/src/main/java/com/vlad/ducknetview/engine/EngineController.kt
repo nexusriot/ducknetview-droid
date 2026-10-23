@@ -525,8 +525,12 @@ class EngineController(
                     .map { it.substringBefore('/') }
                     .filter { !it.startsWith("fe80") }
                     .distinct()
+                // This app's own metrics endpoint is a listener the scan does
+                // not have to guess at, and the common-port window does not
+                // cover a port the user has moved. See [PortScanner.ports].
+                val own = if (settings.metricsEnabled) listOf(settings.metricsPort) else emptyList()
                 val rows = withContext(Dispatchers.IO) {
-                    scanner.scan(addrs, settings.scanFullRange)
+                    scanner.scan(addrs, settings.scanFullRange, own)
                 }
                 val at = System.currentTimeMillis()
                 assembler.setServices(rows, at)

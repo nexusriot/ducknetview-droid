@@ -5,6 +5,7 @@ import com.vlad.ducknetview.domain.baseline.Baseline
 import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
 import com.vlad.ducknetview.domain.model.Transport
+import com.vlad.ducknetview.domain.net.OwnTunnel
 import com.vlad.ducknetview.domain.watchlist.Watchlist
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -66,10 +67,13 @@ class NetworkIdentityTest {
         val before = listOf(wifi785)
         val after = listOf(
             Fixtures.network(id = "786", ifaceName = "wlan0", isDefault = false),
+            // Somebody else's tunnel: a VPN this app did not raise is real
+            // news, so it keeps its event.
             Fixtures.network(
                 id = "787",
                 ifaceName = "tun0",
                 transport = Transport.VPN,
+                addresses = listOf("10.8.0.2/24"),
                 isDefault = true,
             ),
         )
@@ -79,7 +83,7 @@ class NetworkIdentityTest {
             "the Wi-Fi was reported down while it never stopped carrying traffic: $events",
             events.none { it.kind == EventKind.NETWORK_DOWN },
         )
-        // The TUN really is new, so announcing it is correct.
+        // A tunnel this app did not raise really is new, so announcing it is correct.
         assertTrue(
             "the new tunnel was not reported at all: $events",
             events.any { it.kind == EventKind.NETWORK_UP && it.subject.contains("tun0") },
@@ -90,6 +94,84 @@ class NetworkIdentityTest {
             events.any {
                 it.kind == EventKind.NETWORK_CHANGED && it.detail.contains("default network")
             },
+        )
+    }
+
+    private fun ownTun(id: String = "787") = Fixtures.network(
+        id = id,
+        ifaceName = "tun0",
+        transport = Transport.VPN,
+        addresses = listOf("${OwnTunnel.V4}/30", "${OwnTunnel.V6}/126"),
+        isDefault = true,
+        gateway = null,
+    )
+
+    /**
+     * Round six fixed the fabricated *Wi-Fi* outage and left the one link this
+     * app is actually responsible for. Measured on the M10 an hour at a time:
+     * every press of the capture switch wrote `INFO network_up tun0 (vpn)
+     * appeared`, and every release wrote `WARN network_down tun0 (vpn)
+     * vanished` — a warning, so a notification and a webhook POST — one line
+     * away from the `engine_stopped` entry that already said it.
+     */
+    @Test
+    fun `turning capture on is not a network appearing`() {
+        val events = diff(listOf(wifi785), listOf(wifi786.copy(isDefault = false), ownTun()))
+
+        assertTrue(
+            "this app's own tunnel was announced as a new network: $events",
+            events.none { it.kind == EventKind.NETWORK_UP },
+        )
+    }
+
+    @Test
+    fun `turning capture off is not an outage`() {
+        // Up, then gone for the two polls a real drop needs.
+        diff(listOf(wifi785), listOf(wifi786.copy(isDefault = false), ownTun()))
+        val gone = Fixtures.snapshot(atMillis = 3_000L, networks = listOf(wifi786))
+        engine.diff(
+            prev = Fixtures.snapshot(atMillis = 2_500L, networks = listOf(wifi786, ownTun())),
+            cur = gone,
+            baseline = Baseline.EMPTY,
+            watchlist = Watchlist(emptyList()),
+        )
+        val second = engine.diff(
+            prev = gone,
+            cur = Fixtures.snapshot(atMillis = 4_000L, networks = listOf(wifi786)),
+            baseline = Baseline.EMPTY,
+            watchlist = Watchlist(emptyList()),
+        )
+
+        assertTrue(
+            "stopping this app's own capture was reported as a network outage: $second",
+            second.none { it.kind == EventKind.NETWORK_DOWN },
+        )
+    }
+
+    /** Somebody else's tunnel going down is the real thing, and must survive. */
+    @Test
+    fun `another app's VPN dropping is still an outage`() {
+        val theirs = Fixtures.network(
+            id = "900",
+            ifaceName = "tun0",
+            transport = Transport.VPN,
+            addresses = listOf("10.8.0.2/24"),
+            isDefault = true,
+        )
+        val up = Fixtures.snapshot(atMillis = 1_000L, networks = listOf(wifi785, theirs))
+        engine.diff(null, up, Baseline.EMPTY, Watchlist(emptyList()))
+        val gone = Fixtures.snapshot(atMillis = 2_000L, networks = listOf(wifi785))
+        engine.diff(prev = up, cur = gone, baseline = Baseline.EMPTY, watchlist = Watchlist(emptyList()))
+        val second = engine.diff(
+            prev = gone,
+            cur = Fixtures.snapshot(atMillis = 3_000L, networks = listOf(wifi785)),
+            baseline = Baseline.EMPTY,
+            watchlist = Watchlist(emptyList()),
+        )
+
+        assertTrue(
+            "a third-party VPN dropping went unreported: $second",
+            second.any { it.kind == EventKind.NETWORK_DOWN && it.subject.contains("tun0") },
         )
     }
 

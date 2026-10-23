@@ -16,6 +16,70 @@ class WifiSourceTest {
 
     private val context get() = ApplicationProvider.getApplicationContext<android.content.Context>()
 
+    /**
+     * The regression that cost this app the SSID on every modern device.
+     *
+     * The two sources were chained with `?:`, which only falls through on a
+     * *missing* source — and on API 31+ the authoritative one
+     * (`NetworkCapabilities.transportInfo` read synchronously) is never
+     * missing, it is *redacted*: measured on the M10 it reported
+     * `<unknown ssid>` / `02:00:00:00:00:00` with every permission granted,
+     * while `getConnectionInfo()` beside it named the network correctly. So
+     * the name has to be merged across the sources, not picked from the first
+     * one that answered.
+     */
+    @Test
+    fun `a redacted first source does not cost the name the second one has`() {
+        val redacted = WifiState(
+            ssid = null,
+            bssid = null,
+            rssiDbm = -55,
+            linkSpeedMbps = 150,
+            frequencyMhz = 2437,
+            standard = "Wi-Fi 4",
+        )
+        val named = WifiState(
+            ssid = "Hystax",
+            bssid = "18:fd:74:15:3c:fe",
+            rssiDbm = -49,
+            linkSpeedMbps = 150,
+        )
+
+        val merged = WifiSource.mergeStates(listOf(redacted, named))!!
+
+        assertEquals("Hystax", merged.ssid)
+        assertEquals("18:fd:74:15:3c:fe", merged.bssid)
+        // The radio numbers still come from the authoritative source.
+        assertEquals(-55, merged.rssiDbm)
+        assertEquals("Wi-Fi 4", merged.standard)
+    }
+
+    @Test
+    fun `the first source keeps the name when it has one`() {
+        val named = WifiState(ssid = "Primary", bssid = "aa:bb:cc:dd:ee:ff", rssiDbm = -55, linkSpeedMbps = 150)
+        val other = WifiState(ssid = "Stale", bssid = "11:22:33:44:55:66", rssiDbm = -40, linkSpeedMbps = 10)
+
+        val merged = WifiSource.mergeStates(listOf(named, other))!!
+
+        assertEquals("Primary", merged.ssid)
+        assertEquals("aa:bb:cc:dd:ee:ff", merged.bssid)
+    }
+
+    @Test
+    fun `no source at all is still no Wi-Fi state, not an empty one`() {
+        assertNull(WifiSource.mergeStates(emptyList()))
+    }
+
+    @Test
+    fun `every source redacted stays null rather than inventing a name`() {
+        val redacted = WifiState(ssid = null, bssid = null, rssiDbm = -55, linkSpeedMbps = 150)
+
+        val merged = WifiSource.mergeStates(listOf(redacted, redacted))!!
+
+        assertNull(merged.ssid)
+        assertNull(merged.bssid)
+    }
+
     @Test
     fun `cleanSsid strips the quotes the platform wraps around it`() {
         assertEquals("HomeNet", WifiSource.cleanSsid("\"HomeNet\""))

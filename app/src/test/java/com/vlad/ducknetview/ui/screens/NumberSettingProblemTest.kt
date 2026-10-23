@@ -41,9 +41,29 @@ class NumberSettingProblemTest {
         )
     }
 
+    /**
+     * Read off the tablet: a field holding twenty digits was refused with "not
+     * a whole number", which it plainly is. The refusal is right and the reason
+     * was not, and this is the one function in the app whose entire job is
+     * saying why something was refused.
+     */
+    @Test
+    fun `a run of digits too long to store is refused as too large, not as gibberish`() {
+        val problem = numberProblem("99999999999999999999", anyValue)
+
+        assertNotNull(problem)
+        assertTrue(
+            "a number too big to store was called not a number: $problem",
+            !problem!!.contains("not a whole number"),
+        )
+        assertTrue("the message does not say how large is too large: $problem", problem.contains("above"))
+    }
+
     @Test
     fun `letters are reported`() {
         assertNotNull(numberProblem("abc", anyValue))
+        assertTrue(numberProblem("abc", anyValue)!!.contains("not a whole number"))
+        assertTrue(numberProblem("12abc", anyValue)!!.contains("not a whole number"))
     }
 
     /**

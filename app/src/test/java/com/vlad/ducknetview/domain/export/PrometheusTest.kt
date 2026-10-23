@@ -5,6 +5,7 @@ import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.ConnState
 import com.vlad.ducknetview.domain.model.EngineMode
 import com.vlad.ducknetview.domain.model.Exposure
+import com.vlad.ducknetview.domain.model.LatencyMethod
 import com.vlad.ducknetview.domain.model.LatencySample
 import com.vlad.ducknetview.domain.model.NetSnapshot
 import com.vlad.ducknetview.domain.usage.QuotaStatus
@@ -358,6 +359,80 @@ class PrometheusTest {
             all(out, "ducknetview_latency_up").first { it.labels["target"] == "1.1.1.1" }.value,
             0.0,
         )
+    }
+
+    /**
+     * Measured on the M10: the gateway row read
+     * `ducknetview_latency_seconds{target="192.168.88.1:80",name="gateway"}`
+     * for a figure the screen beside it labelled "ICMP echo". Nothing had
+     * probed port 80, and a scrape could not tell this reading apart from a
+     * TCP handshake — the two measure different things (DESIGN §5), so a
+     * dashboard averaging them averages two quantities.
+     */
+    @Test
+    fun anEchoReadingIsNotReportedAsAProbeOfAPort() {
+        val out = Prometheus.render(
+            fullSnapshot().copy(
+                latency = listOf(
+                    LatencySample(
+                        target = "192.168.88.1:80",
+                        label = "gateway",
+                        millis = 3,
+                        ok = true,
+                        method = LatencyMethod.ICMP,
+                    ),
+                ),
+            )
+        )
+
+        val gw = all(out, "ducknetview_latency_seconds").single()
+        assertEquals("192.168.88.1", gw.labels["target"])
+        assertEquals("icmp", gw.labels["method"])
+        assertEquals("gateway", gw.labels["name"])
+        assertTrue("a port nobody probed reached the scrape", !out.contains("192.168.88.1:80"))
+    }
+
+    @Test
+    fun aHandshakeReadingKeepsThePortItAskedAbout() {
+        val out = Prometheus.render(
+            fullSnapshot().copy(
+                latency = listOf(
+                    LatencySample(
+                        target = "1.1.1.1:443",
+                        label = "cloudflare",
+                        millis = 12,
+                        ok = true,
+                        method = LatencyMethod.TCP,
+                    ),
+                ),
+            )
+        )
+
+        val s = all(out, "ducknetview_latency_seconds").single()
+        assertEquals("1.1.1.1:443", s.labels["target"])
+        assertEquals("tcp", s.labels["method"])
+    }
+
+    @Test
+    fun theMethodIsAlsoOnTheUpSeriesSoADownProbeIsAttributable() {
+        val out = Prometheus.render(
+            fullSnapshot().copy(
+                latency = listOf(
+                    LatencySample(
+                        target = "192.168.88.1:80",
+                        label = "gateway",
+                        millis = -1,
+                        ok = false,
+                        method = LatencyMethod.ICMP,
+                    ),
+                ),
+            )
+        )
+
+        val up = all(out, "ducknetview_latency_up").single()
+        assertEquals(0.0, up.value, 0.0)
+        assertEquals("icmp", up.labels["method"])
+        assertEquals("192.168.88.1", up.labels["target"])
     }
 
     @Test

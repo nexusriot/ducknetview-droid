@@ -514,7 +514,14 @@ internal fun numberProblem(text: String, max: Long): String? {
     val trimmed = text.trim()
     if (trimmed.isEmpty()) return null
     val value = trimmed.toLongOrNull()
-        ?: return "not a whole number, so the setting still holds its previous value"
+        // A run of digits too long for a Long is a whole number, just not one
+        // that fits; saying "not a whole number" sends the reader hunting for a
+        // typo that is not there. Either way it is refused, not stored.
+        ?: return if (trimmed.all { it.isDigit() }) {
+            "cannot be above $max, so the setting still holds its previous value"
+        } else {
+            "not a whole number, so the setting still holds its previous value"
+        }
     if (value < 0) return "cannot be negative, so the setting still holds its previous value"
     if (value > max) return "cannot be above $max, so the setting still holds its previous value"
     return null

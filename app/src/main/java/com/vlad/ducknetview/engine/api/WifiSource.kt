@@ -16,11 +16,24 @@ import com.vlad.ducknetview.domain.model.WifiState
  * Two facts drive the shape of this class. First, from API 31 the authoritative
  * `WifiInfo` is the one hanging off the active network's capabilities, and
  * `WifiManager.getConnectionInfo()` is deprecated — but it is still the only
- * path that works when the capabilities carry no transport info, so both are
- * tried. Second, without location permission the platform hands back the
- * placeholder SSID `"<unknown ssid>"` and the anonymised BSSID
- * `02:00:00:00:00:00` instead of failing; those are reported as null so the UI
- * hides the field rather than rendering a fake value.
+ * path that carries a name, so both are read and [mergeStates] combines them.
+ * Second, without location permission the platform hands back the placeholder
+ * SSID `"<unknown ssid>"` and the anonymised BSSID `02:00:00:00:00:00` instead
+ * of failing; those are reported as null so the UI hides the field rather than
+ * rendering a fake value.
+ *
+ * The two were originally chained with `?:`, which falls through on a *missing*
+ * source and not on a *redacted* one — and the synchronous
+ * `getNetworkCapabilities` getter is always redacted, because it has no caller
+ * identity to run the location check against. Measured on the M10 with every
+ * Wi-Fi permission granted, location services on and the Activity in front:
+ * the capabilities said `<unknown ssid>` / `02:00:00:00:00:00` while
+ * `getConnectionInfo()` beside it said `"Hystax"` / the real BSSID. So the
+ * first source always answered, the second was never consulted, and the app
+ * could not name the network it was on. That is not only a blank field: network
+ * trust is keyed on the SSID, so `NetworkTrust.keyOf` returned null for every
+ * Wi-Fi link, the Links screen offered no trust buttons at all, and nothing
+ * the user marked could ever be remembered.
  */
 class WifiSource(context: Context) {
 
@@ -38,10 +51,8 @@ class WifiSource(context: Context) {
         null
     }
 
-    fun current(): WifiState? {
-        val info = transportInfo() ?: legacyInfo() ?: return null
-        return stateOf(info)
-    }
+    fun current(): WifiState? =
+        mergeStates(listOfNotNull(transportInfo(), legacyInfo()).mapNotNull(::stateOf))
 
     /** True when the radio is on; a disabled radio is not a missing permission. */
     fun enabled(): Boolean = try {
@@ -122,6 +133,24 @@ class WifiSource(context: Context) {
 
         /** Wi-Fi 6E is 11ax in the 6 GHz band; the platform has no separate constant. */
         const val SIX_GHZ_FLOOR_MHZ = 5925
+
+        /**
+         * One state out of the sources that answered, in preference order.
+         *
+         * The first source wins the radio numbers — on API 31+ the
+         * capabilities' `WifiInfo` is the authoritative one for those. The
+         * name is taken from the first source that *has* one, which is the
+         * whole point: the authoritative source is also the one the platform
+         * redacts, so without this the answer carries no name on any device
+         * where the location check runs.
+         */
+        internal fun mergeStates(states: List<WifiState>): WifiState? {
+            val base = states.firstOrNull() ?: return null
+            return base.copy(
+                ssid = states.firstNotNullOfOrNull { it.ssid },
+                bssid = states.firstNotNullOfOrNull { it.bssid },
+            )
+        }
 
         internal fun cleanSsid(raw: String?): String? {
             if (raw.isNullOrBlank()) return null

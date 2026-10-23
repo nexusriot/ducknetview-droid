@@ -156,13 +156,36 @@ fun NeighboursScreen(
 
         val table: @Composable (Modifier) -> Unit = { tableModifier ->
             when {
-                snap.frozen -> EmptyState(
+                // A file from the TUI, or from a build of this app that did not
+                // write the sweep, carries no neighbours — and said so. A file
+                // this app wrote after a sweep does carry them, and refusing to
+                // draw them would be the same sentence turned into a lie. The
+                // test is the file's own scan time, not the mode: the reason a
+                // frozen screen must not sweep (it would describe *this*
+                // network) is about the button, which stays disabled either way.
+                snap.frozen && snap.neighbourScanAt <= 0L -> EmptyState(
                     title = EMPTY_NEIGHBOURS_FROZEN,
-                    message = "A snapshot file carries no neighbour sweep — the format " +
-                        "predates this screen, and a sweep run now would describe this " +
-                        "device's network, not the one the file came from.",
+                    message = "This snapshot file carries no neighbour sweep — the file " +
+                        "was written without one, and a sweep run now would describe " +
+                        "this device's network, not the one the file came from.",
                     modifier = tableModifier.testTag(emptyTag(EMPTY_NEIGHBOURS_FROZEN)),
                 )
+
+                // Everything below asks about *this* device's link, which a
+                // frozen screen is not reporting on. With a sweep in the file
+                // the rows are the answer and the live link is irrelevant.
+                snap.frozen -> {
+                    val listState = rememberLazyListState()
+                    ScrollToMatch(state.matchCursor, state.neighbours.size, listState)
+                    LazyColumn(modifier = tableModifier, state = listState) {
+                        itemsIndexed(state.neighbours, key = { _, r -> r.key }) { index, row ->
+                            MatchRow(index = index, state = state) {
+                                NeighbourRowItem(row, state) { selectedKey = row.key }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
 
                 sweepable == null -> EmptyState(
                     title = EMPTY_NEIGHBOURS_NO_V4,
