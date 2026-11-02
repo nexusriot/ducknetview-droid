@@ -72,10 +72,11 @@ class NeighbourScanner(
         gateway: String? = null,
         selfAddresses: Set<String> = emptySet(),
         now: Long = System.currentTimeMillis(),
+        ifaceName: String? = null,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
     ): List<NeighbourRow> {
         val hosts = Subnet.hostsOf(subnet)
-        if (hosts.isEmpty()) {
+        if (hosts.isEmpty() && ifaceName.isNullOrEmpty()) {
             onProgress(0, 0)
             return emptyList()
         }
@@ -86,7 +87,9 @@ class NeighbourScanner(
             // sources are independent and serialising them would double the
             // wait for no better answer.
             val names = launch { discoverNames(found, now) }
+            val v6 = if (!ifaceName.isNullOrEmpty()) launch { allNodes(ifaceName, found, now) } else null
             sweep(hosts, found, now, onProgress)
+            v6?.join()
             // Give the responders that are slower than the sweep a moment,
             // then stop asking. An unbounded wait on a daemon callback is how
             // a scan button never un-greys.
@@ -182,6 +185,56 @@ class NeighbourScanner(
             throw e
         } catch (e: Exception) {
             null
+        } finally {
+            socket.close()
+        }
+    }
+
+    /**
+     * One echo to `ff02::1`, the link's all-nodes group, and every reply
+     * that comes back within the window.
+     *
+     * IPv6 cannot be swept — a /64 has 2^64 addresses — but it does not need
+     * to be: every IPv6 host on a link is a member of the all-nodes group and
+     * is required to answer an echo sent to it, so one request asks them all.
+     * A host that filters ICMPv6 echo stays silent here, as it does to the
+     * IPv4 sweep; and a kernel that delivers only one reply per request makes
+     * this find one host — the screen reports what answered either way.
+     */
+    private suspend fun allNodes(
+        iface: String,
+        found: ConcurrentHashMap<String, NeighbourRow>,
+        now: Long,
+    ) = withContext(Dispatchers.IO) {
+        val group = runCatching { InetAddress.getByName("$ALL_NODES%$iface") }.getOrNull()
+            ?: return@withContext
+        val socket = openSocket(6, PROBE_TIMEOUT_MS) ?: return@withContext
+        try {
+            val seq = sequence.getAndIncrement() and 0xFFFF
+            val message = Icmp.buildEchoRequest(6, seq, PAYLOAD)
+            val startedAt = System.nanoTime()
+            if (!socket.send(message, 0, message.size, group)) return@withContext
+            val scratch = ByteArray(MAX_REPLY)
+            val deadline = startedAt + ALL_NODES_WINDOW_MS * 1_000_000L
+            while (isActive && System.nanoTime() < deadline) {
+                val (n, from) = socket.receiveFrom(scratch)
+                if (n == EchoSocket.TIMED_OUT) continue
+                if (n < Icmp.HEADER_LENGTH) break
+                if (from == null || !Icmp.isEchoReply(scratch, 0, n, 6)) continue
+                if (Icmp.seq(scratch, 0) != seq) continue
+                val address = from.hostAddress?.substringBefore('%') ?: continue
+                val rtt = ((System.nanoTime() - startedAt) / 1_000_000L).toInt().coerceAtLeast(0)
+                found.compute(address) { _, existing ->
+                    (existing ?: NeighbourRow(address = address, firstSeen = now)).copy(
+                        rttMillis = if (existing != null && existing.rttMillis >= 0) existing.rttMillis else rtt,
+                        lastSeen = now,
+                    )
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // a partial answer is still an answer
         } finally {
             socket.close()
         }
@@ -295,6 +348,12 @@ class NeighbourScanner(
 
         /** One echo, one chance. A LAN that needs longer than this is not one. */
         const val PROBE_TIMEOUT_MS = 500
+
+        /** The link-local all-nodes multicast group (RFC 4291). */
+        const val ALL_NODES = "ff02::1"
+
+        /** Replies to one all-nodes echo arrive in a burst; this is generous. */
+        const val ALL_NODES_WINDOW_MS = 1_500L
 
         /** How long mDNS discovery is left running alongside the sweep. */
         const val MDNS_WINDOW_MS = 4_000L

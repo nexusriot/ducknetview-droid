@@ -2,6 +2,7 @@ package com.vlad.ducknetview.domain.alerts
 
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.AppSettings
+import com.vlad.ducknetview.domain.model.ConnRow
 import com.vlad.ducknetview.domain.model.Event
 import com.vlad.ducknetview.domain.model.EventKind
 import com.vlad.ducknetview.domain.model.EventLevel
@@ -18,12 +19,27 @@ import com.vlad.ducknetview.domain.usage.QuotaStatus
 class AlertRules(
     private val refireMillis: Long = REFIRE_MILLIS,
     private val hostsPerApp: Int = HOSTS_PER_APP,
+    private val clearAfterMillis: Long = CLEAR_AFTER_MILLIS,
 ) {
 
     private val firedAt = LinkedHashMap<String, Long>()
     private val growth = LinkedHashMap<Int, Int>()
     private var prevConnCounts = LinkedHashMap<Int, Int>()
     private val knownHosts = LinkedHashMap<Int, LinkedHashSet<String>>()
+
+    /**
+     * Subjects a sustained rule has fired on and not yet reported as over,
+     * keyed like [firedAt]. The TUI raises a `*_cleared` line once a subject
+     * has been back under its threshold for [clearAfterMillis] — including
+     * when it went away entirely — and without it a webhook consumer is paged
+     * and never resolved, and the log records beginnings with no ends.
+     *
+     * `fanout` and `conn_growth` have no entry here on purpose: a burst is a
+     * moment rather than a state, and no single poll can know a scan stopped.
+     */
+    private val breaches = LinkedHashMap<String, Breach>()
+
+    private class Breach(val kind: EventKind, val subject: String, var lastOverAt: Long)
 
     /**
      * Budget reporting, scoped to the cycle rather than to a clock window.
@@ -44,6 +60,7 @@ class AlertRules(
         if (s.alertConnGrowthPolls > 0) connGrowth(cur, s.alertConnGrowthPolls, nowMillis, out)
         if (s.alertFanoutHosts > 0) fanout(cur, s.alertFanoutHosts, nowMillis, out)
         quota(cur, s, nowMillis, out)
+        cleared(s, nowMillis, out)
 
         // Pruning runs unconditionally. Hanging it off one rule's path means a
         // device with only the other rules enabled never prunes at all.
@@ -64,6 +81,7 @@ class AlertRules(
         growth.clear()
         prevConnCounts = LinkedHashMap()
         knownHosts.clear()
+        breaches.clear()
         quotaCycleStart = Long.MIN_VALUE
         quotaBandReported = -1
         quotaProjectionReported = false
@@ -76,7 +94,10 @@ class AlertRules(
         for (a in cur.apps) {
             val total = a.rxBps + a.txBps
             if (total < threshold) continue
-            if (!shouldFire("app:${a.uid}", now)) continue
+            val key = "app:${a.uid}"
+            stillOver(key, now)
+            if (!shouldFire(key, now)) continue
+            breached(key, EventKind.THRESHOLD_APP_BPS_CLEARED, subject(a), now)
             out += Event(
                 at = now,
                 level = EventLevel.ALERT,
@@ -92,12 +113,15 @@ class AlertRules(
         for (c in cur.conns) {
             val total = c.rxBps + c.txBps
             if (total < threshold) continue
-            if (!shouldFire("conn:${c.key}", now)) continue
+            val key = "conn:${c.key}"
+            stillOver(key, now)
+            if (!shouldFire(key, now)) continue
+            breached(key, EventKind.THRESHOLD_CONN_BPS_CLEARED, connSubject(c), now)
             out += Event(
                 at = now,
                 level = EventLevel.ALERT,
                 kind = EventKind.THRESHOLD_CONN_BPS,
-                subject = "${c.local} → ${c.remoteDisplay(revDns = true)}",
+                subject = connSubject(c),
                 detail = joinNonEmpty(
                     "${Units.rate(total, RateUnit.BYTES)} over threshold " +
                         Units.rate(threshold, RateUnit.BYTES),
@@ -110,12 +134,15 @@ class AlertRules(
     private fun rtt(cur: NetSnapshot, thresholdMs: Int, now: Long, out: MutableList<Event>) {
         for (c in cur.conns) {
             if (c.rttMillis <= 0 || c.rttMillis < thresholdMs) continue
-            if (!shouldFire("rtt:${c.key}", now)) continue
+            val key = "rtt:${c.key}"
+            stillOver(key, now)
+            if (!shouldFire(key, now)) continue
+            breached(key, EventKind.THRESHOLD_RTT_CLEARED, connSubject(c), now)
             out += Event(
                 at = now,
                 level = EventLevel.WARN,
                 kind = EventKind.THRESHOLD_RTT,
-                subject = "${c.local} → ${c.remoteDisplay(revDns = true)}",
+                subject = connSubject(c),
                 detail = joinNonEmpty(
                     "RTT ${Units.millis(c.rttMillis)} over threshold ${thresholdMs} ms",
                     c.appLabel,
@@ -259,6 +286,53 @@ class AlertRules(
         }
     }
 
+    /**
+     * Report every breach whose subject has stayed under its threshold for
+     * [clearAfterMillis]. A subject that has gone away — the transfer
+     * finished, the app exited — is under by definition, which is the case
+     * that matters most: it is how most breaches end.
+     *
+     * Switching a rule off drops its breaches without a line. The user did
+     * that, and "cleared" would claim the subject recovered when the app
+     * simply stopped looking.
+     */
+    private fun cleared(s: AppSettings, now: Long, out: MutableList<Event>) {
+        val it = breaches.entries.iterator()
+        while (it.hasNext()) {
+            val (_, b) = it.next()
+            val enabled = when (b.kind) {
+                EventKind.THRESHOLD_APP_BPS_CLEARED -> s.alertAppBps > 0
+                EventKind.THRESHOLD_CONN_BPS_CLEARED -> s.alertConnBps > 0
+                else -> s.alertRttMs > 0
+            }
+            if (!enabled) {
+                it.remove()
+                continue
+            }
+            if (now - b.lastOverAt < clearAfterMillis) continue
+            it.remove()
+            out += Event(
+                at = now,
+                level = EventLevel.INFO,
+                kind = b.kind,
+                subject = b.subject,
+                detail = "back under the threshold for ${clearAfterMillis / 1000} s",
+            )
+        }
+    }
+
+    private fun breached(key: String, kind: EventKind, subject: String, now: Long) {
+        val b = breaches[key]
+        if (b == null) breaches[key] = Breach(kind, subject, now) else b.lastOverAt = now
+    }
+
+    /** A breach still over its threshold, whether or not the cooldown lets it fire. */
+    private fun stillOver(key: String, now: Long) {
+        breaches[key]?.lastOverAt = now
+    }
+
+    private fun connSubject(c: ConnRow): String = "${c.local} → ${c.remoteDisplay(revDns = true)}"
+
     private fun scope(q: QuotaStatus): String =
         if (q.mobileOnly) "mobile data budget" else "data budget"
 
@@ -305,6 +379,9 @@ class AlertRules(
 
         /** Remote hosts remembered per app for the fan-out rule. */
         const val HOSTS_PER_APP = 4096
+
+        /** How long a subject must stay under before its breach is reported over — the TUI's minute. */
+        const val CLEAR_AFTER_MILLIS = 60_000L
 
         /**
          * Width of a quota reporting band, in percent. One line per 10% of

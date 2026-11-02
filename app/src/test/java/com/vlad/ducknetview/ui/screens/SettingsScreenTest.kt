@@ -3,6 +3,7 @@ package com.vlad.ducknetview.ui.screens
 import com.vlad.ducknetview.ui.theme.DuckTheme
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -16,6 +17,7 @@ import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.RateUnit
 import com.vlad.ducknetview.ui.UiState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -279,5 +281,18 @@ class SettingsScreenTest {
         rule.onNodeWithTag("settings:privacy").performScrollTo().assertExists()
         rule.onNodeWithText("stays on this device", substring = true).assertExists()
         rule.onNodeWithText("Packet contents are never", substring = true).assertExists()
+    }
+
+    /**
+     * The setting was persisted and honoured by the engine, but the screen only
+     * rendered it as a read-only row, so the one third-party lookup the app
+     * makes could not be turned off.
+     */
+    @Test
+    fun externalIpSwitchWritesTheSetting() {
+        val actions = RecordingActions()
+        show(screenState(), actions)
+        rule.onNodeWithTag("settings:external-ip").performScrollTo().assertIsOn().performClick()
+        assertFalse(actions.settings.externalIpEnabled)
     }
 }

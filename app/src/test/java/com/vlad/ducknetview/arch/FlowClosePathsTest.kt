@@ -59,7 +59,7 @@ class FlowClosePathsTest {
         // The UDP dispatch block that handles a blocked owner, up to its return.
         val blockedBranch = text
             .substringAfter("private fun dispatchUdp")
-            .substringAfter("if (VpnBridge.isBlocked(flow.uid)) {")
+            .substringAfter("if (reason != null) {")
             .substringBefore("return@synchronized null")
 
         assertTrue(
@@ -79,13 +79,17 @@ class FlowClosePathsTest {
         val text = service.readText()
         val blockedBranch = text
             .substringAfter("private fun dispatchTcp")
-            .substringAfter("if (VpnBridge.isBlocked(flow.uid)) {")
+            .substringAfter("if (reason != null) {")
             .substringBefore("return@synchronized null")
 
         assertTrue(
             "the blocked-TCP branch no longer calls reject(), which is what sets " +
                 "flow.blocked and sends the RST",
-            blockedBranch.contains("reject()"),
+            blockedBranch.contains("reject("),
+        )
+        assertTrue(
+            "the blocked-TCP branch does not record which rule refused the flow",
+            blockedBranch.contains("flow.blockReason = reason"),
         )
     }
 }

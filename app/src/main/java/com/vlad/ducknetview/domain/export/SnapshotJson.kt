@@ -86,9 +86,11 @@ object SnapshotJson {
             "publicConns" to s.security.publicConns,
             "watchlistHits" to s.security.watchlistHits,
             "offBaseline" to s.security.offBaseline,
+            "cleartextConns" to s.security.cleartextConns,
         ),
         "quota" to quotaToMap(s.quota),
         "untrustedDefault" to s.untrustedDefault,
+        "day" to s.day,
         "frozen" to s.frozen,
         "frozenLabel" to s.frozenLabel,
         "error" to s.error,
@@ -136,9 +138,11 @@ object SnapshotJson {
                 publicConns = int(security, "publicConns"),
                 watchlistHits = int(security, "watchlistHits"),
                 offBaseline = int(security, "offBaseline"),
+                cleartextConns = int(security, "cleartextConns"),
             ),
             quota = quotaFromMap(obj(m, "quota")),
             untrustedDefault = bool(m, "untrustedDefault"),
+            day = floats(m, "day"),
             frozen = bool(m, "frozen"),
             frozenLabel = strOrNull(m, "frozenLabel"),
             error = strOrNull(m, "error"),
@@ -274,6 +278,12 @@ object SnapshotJson {
         "isNew" to c.isNew,
         "watchlisted" to c.watchlisted,
         "blocked" to c.blocked,
+        "blockReason" to c.blockReason,
+        "tls" to c.tls,
+        "tlsDeprecated" to c.tlsDeprecated,
+        "cleartext" to c.cleartext,
+        "encryptedDns" to c.encryptedDns,
+        "owner" to c.owner,
     )
 
     private fun connFromMap(m: Map<String, Any?>): ConnRow = ConnRow(
@@ -301,6 +311,12 @@ object SnapshotJson {
         isNew = bool(m, "isNew"),
         watchlisted = bool(m, "watchlisted"),
         blocked = bool(m, "blocked"),
+        blockReason = str(m, "blockReason"),
+        tls = str(m, "tls"),
+        tlsDeprecated = bool(m, "tlsDeprecated"),
+        cleartext = str(m, "cleartext"),
+        encryptedDns = str(m, "encryptedDns"),
+        owner = str(m, "owner"),
     )
 
     private fun closedToMap(c: ClosedConn): Map<String, Any?> = linkedMapOf(
@@ -335,6 +351,8 @@ object SnapshotJson {
         "excludedFromVpn" to a.excludedFromVpn,
         "remoteHosts" to a.remoteHosts,
         "blockedAttempts" to a.blockedAttempts,
+        "todayBackground" to a.todayBackground,
+        "budgetBytes" to a.budgetBytes,
     )
 
     private fun appFromMap(m: Map<String, Any?>): AppRow = AppRow(
@@ -353,6 +371,9 @@ object SnapshotJson {
         excludedFromVpn = bool(m, "excludedFromVpn"),
         remoteHosts = int(m, "remoteHosts"),
         blockedAttempts = long(m, "blockedAttempts"),
+        // A file without the field knows nothing of the split, which is -1, not "none".
+        todayBackground = long(m, "todayBackground", -1L),
+        budgetBytes = long(m, "budgetBytes"),
     )
 
     private fun serviceToMap(s: ServiceRow): Map<String, Any?> = linkedMapOf(

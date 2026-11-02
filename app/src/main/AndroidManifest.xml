@@ -53,6 +53,9 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local network traffic monitoring for the device owner" />
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
         </service>
 
         <service
@@ -72,6 +75,40 @@
             <intent-filter>
                 <action android:name="com.vlad.ducknetview.STOP_CAPTURE" />
             </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Exported on purpose, for Tasker and adb; refuses every command
+             until the user switches automation on in Settings. -->
+        <receiver
+            android:name=".service.AutomationReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.vlad.ducknetview.action.START_CAPTURE" />
+                <action android:name="com.vlad.ducknetview.action.STOP_CAPTURE" />
+                <action android:name="com.vlad.ducknetview.action.SCAN_SERVICES" />
+                <action android:name="com.vlad.ducknetview.action.SCAN_HOSTS" />
+                <action android:name="com.vlad.ducknetview.action.EXPORT_SNAPSHOT" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".service.RatesWidget"
+            android:exported="false"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_rates_info" />
         </receiver>
 
         <provider

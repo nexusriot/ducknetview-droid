@@ -13,6 +13,9 @@ keystore.properties
 *.jks
 *.keystore
 
+# Claude Code: local settings and the throwaway worktrees agents work in
+.claude/
+
 # IDE
 .idea/
 *.iml
@@ -26,6 +29,7 @@ keystore.properties
 *.ap_
 *.dex
 *.class
+*.idsig
 /captures/
 .externalNativeBuild/
 .cxx/
@@ -34,6 +38,12 @@ keystore.properties
 *.hprof
 *.log
 /app/release/
+
+# fastlane run output (the store text under fastlane/metadata/ IS tracked)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
 
 # OS
 .DS_Store
@@ -44,3 +54,6 @@ Thumbs.db
 #                           must be committed, or a future migration cannot be
 #                           validated against the shipped database.
 #   gradle/wrapper/         the wrapper jar and properties pin the build.
+#   fastlane/metadata/      F-Droid / store text, read from the repo by the
+#                           F-Droid build server.
+#   .github/workflows/      CI.

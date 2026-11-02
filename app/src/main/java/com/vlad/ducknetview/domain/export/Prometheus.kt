@@ -170,6 +170,16 @@ object Prometheus {
 
         b.family("public_connections", "Connections whose remote address is public.", GAUGE)
         b.point("public_connections", num(s.security.publicConns.toLong()))
+
+        b.family("cleartext_connections", "Live flows speaking an unencrypted application protocol.", GAUGE)
+        b.point("cleartext_connections", num(s.security.cleartextConns.toLong()))
+
+        b.family(
+            "deprecated_tls_connections",
+            "Live flows that negotiated SSL 3.0, TLS 1.0 or TLS 1.1 (RFC 8996).",
+            GAUGE,
+        )
+        b.point("deprecated_tls_connections", num(s.conns.count { it.tlsDeprecated }.toLong()))
     }
 
     private fun renderEvents(b: StringBuilder, s: NetSnapshot) {

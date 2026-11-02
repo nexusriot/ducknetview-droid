@@ -63,6 +63,10 @@ class BridgeFieldsWrittenTest {
                 .filter { it.name != "DuckVpnService.kt" }
                 .forEach { append(it.readText()).append('\n') }
         }
+        // The service class shares a file with the bridge and is a legitimate
+        // writer — it is what the running engine reports through. Only the
+        // bridge object itself is excluded.
+        append(serviceFile.readText().substringBefore("object VpnBridge {"))
     }
 
     @Test

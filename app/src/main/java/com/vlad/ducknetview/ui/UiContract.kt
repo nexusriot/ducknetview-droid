@@ -1,5 +1,10 @@
 package com.vlad.ducknetview.ui
 
+import com.vlad.ducknetview.domain.diff.SnapshotDiff
+import com.vlad.ducknetview.domain.firewall.AppPolicy
+import com.vlad.ducknetview.domain.firewall.FirewallRule
+import com.vlad.ducknetview.domain.usage.AppBudget
+import com.vlad.ducknetview.domain.views.SavedView
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.ClosedConn
@@ -125,7 +130,26 @@ data class UiState(
      * on the frames before DataStore answers.
      */
     val settingsLoaded: Boolean = false,
+    val savedViews: List<SavedView> = emptyList(),
+    val firewallRules: List<FirewallRule> = emptyList(),
+    val appPolicies: Map<Int, AppPolicy> = emptyMap(),
+    val appBudgets: List<AppBudget> = emptyList(),
+    /** Names in the imported block list; 0 when none is imported. */
+    val blocklistSize: Int = 0,
+    /** Ranges in the imported AS table; 0 when none is imported. */
+    val asnSize: Int = 0,
+    /** A snapshot compared against the live device, while it is open. */
+    val diff: DiffView? = null,
+    /** The system started capture as its always-on VPN. */
+    val alwaysOn: Boolean = false,
+    /** ...and blocks every connection while it is not running. */
+    val lockdown: Boolean = false,
+    /** Whether VPN consent has been granted once, so capture can start unattended. */
+    val vpnConsentGranted: Boolean = false,
 )
+
+/** A snapshot file compared with what this device shows now. */
+data class DiffView(val label: String, val diff: SnapshotDiff)
 
 /** A grouped-by-remote-host row: the TUI's `g` view. */
 data class HostGroup(
@@ -220,4 +244,21 @@ interface UiActions {
     fun requestUsageAccess()
     fun requestWifiPermission()
     fun dismissStatus()
+
+    fun terminateConnection(key: String)
+    /** Refuse [pattern] (an address or a name) for one app, or for all when [packageName] is empty. */
+    fun addFirewallRule(pattern: String, packageName: String)
+    fun removeFirewallRule(rule: FirewallRule)
+    fun setAppPolicy(policy: AppPolicy)
+    fun setAppBudget(packageName: String, capBytes: Long, block: Boolean)
+    fun removeAppBudget(packageName: String)
+    fun importBlocklist()
+    fun clearBlocklist()
+    fun importAsn()
+    fun clearAsn()
+    fun saveView(name: String)
+    fun applyView(name: String)
+    fun deleteView(name: String)
+    fun compareSnapshot()
+    fun closeDiff()
 }

@@ -61,6 +61,11 @@ data class NetSnapshot(
      * or stay silent about one that did.
      */
     val untrustedDefault: Boolean = false,
+    /**
+     * Total throughput over the last 24 hours as peak-per-bucket, oldest
+     * first, read back from disk — the one chart that survives a restart.
+     */
+    val day: List<Float> = emptyList(),
     val frozen: Boolean = false,
     val frozenLabel: String? = null,
     val error: String? = null,
@@ -112,6 +117,8 @@ data class SecurityCounts(
     val publicConns: Int = 0,
     val watchlistHits: Int = 0,
     val offBaseline: Int = 0,
+    /** Live flows speaking an unencrypted application protocol. */
+    val cleartextConns: Int = 0,
 )
 
 // ---------------- networks / interfaces ----------------
@@ -255,6 +262,18 @@ data class ConnRow(
     val isNew: Boolean = false,
     val watchlisted: Boolean = false,
     val blocked: Boolean = false,
+    /** Why the firewall refused or cut this flow — the rule or policy that did. */
+    val blockReason: String = "",
+    /** The negotiated TLS version (`TLS 1.3`), when a ServerHello was seen. */
+    val tls: String = "",
+    /** The negotiated version is one RFC 8996 deprecated (SSL 3, TLS 1.0, 1.1). */
+    val tlsDeprecated: Boolean = false,
+    /** An unencrypted application protocol this flow speaks (`http`), or empty. */
+    val cleartext: String = "",
+    /** The encrypted-DNS transport this flow looks like (`DNS-over-HTTPS`), or empty. */
+    val encryptedDns: String = "",
+    /** The autonomous system behind the remote address, when an AS table is loaded. */
+    val owner: String = "",
 ) {
     /**
      * ICMP echo addresses a host, not a service: its ports are the echo
@@ -324,6 +343,14 @@ data class AppRow(
      * something.
      */
     val blockedAttempts: Long = 0L,
+    /**
+     * Bytes this app moved today while it was not in the foreground, from
+     * `NetworkStatsManager`'s per-state buckets. Needs Usage Access, like
+     * [todayRx]; -1 when the platform gave no split.
+     */
+    val todayBackground: Long = -1L,
+    /** The per-app allowance this cycle, when the user set one; 0 for none. */
+    val budgetBytes: Long = 0L,
 )
 
 /**
@@ -345,6 +372,8 @@ data class BlockedAttempt(
     val remotePort: Int,
     val at: Long,
     val appLabel: String = "",
+    /** The rule or policy that refused it. */
+    val reason: String = "",
 ) {
     val remote: String
         get() = if (proto == Proto.ICMP) remoteAddr else fmtAddr(remoteAddr, remotePort)

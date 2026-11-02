@@ -82,3 +82,17 @@ data class DomainEntity(
     val lastSeen: Long,
     val addresses: String,
 )
+
+/**
+ * One minute of total throughput, kept for a day. See
+ * [com.vlad.ducknetview.domain.history.MinuteSample]; the minute number is the
+ * key because a minute is written once, when it closes.
+ */
+@Entity(tableName = "minute_history")
+data class MinuteEntity(
+    @PrimaryKey val minute: Long,
+    val rxPeakBps: Long,
+    val txPeakBps: Long,
+    val rxBytes: Long,
+    val txBytes: Long,
+)

@@ -189,6 +189,74 @@ class UsageHistorySource(context: Context) {
     }
 
     /** Local midnight of the day number [day], for a cycle-start query. */
+    /**
+     * Today's bytes per uid moved while the app was *not* in the foreground.
+     *
+     * `querySummary` keeps the per-state split (`STATE_FOREGROUND` vs
+     * `STATE_DEFAULT`), which is what answers "which app used data while I
+     * wasn't using it" without capture. A uid absent from the answer moved
+     * nothing in the background, which is different from the platform giving
+     * no split at all — that case returns an empty map and the screen hides
+     * the column.
+     */
+    suspend fun todayBackgroundPerUid(): Map<Int, Long> = withContext(Dispatchers.IO) {
+        val manager = nsm ?: return@withContext emptyMap()
+        if (!hasAccess()) return@withContext emptyMap()
+        val start = startOfToday()
+        val end = System.currentTimeMillis()
+        val out = HashMap<Int, Long>()
+        var sawForeground = false
+        for (type in NETWORK_TYPES) {
+            val stats = summary(manager, type, start, end) ?: continue
+            try {
+                val bucket = NetworkStats.Bucket()
+                while (stats.hasNextBucket()) {
+                    if (!stats.getNextBucket(bucket)) break
+                    out.putIfAbsent(bucket.uid, 0L)
+                    when (bucket.state) {
+                        NetworkStats.Bucket.STATE_FOREGROUND -> sawForeground = true
+                        NetworkStats.Bucket.STATE_DEFAULT ->
+                            out[bucket.uid] = out.getValue(bucket.uid) + bucket.rxBytes + bucket.txBytes
+                    }
+                }
+            } catch (e: Exception) {
+                // partial data beats none
+            } finally {
+                closeQuietly(stats)
+            }
+        }
+        // Every bucket in STATE_ALL means the platform did not split by state,
+        // and calling all of it "background" would be a fabrication.
+        if (!sawForeground && out.values.all { it == 0L }) emptyMap() else out
+    }
+
+    /** Bytes per uid since [startMillis], for per-app budgets. */
+    suspend fun perUidSince(startMillis: Long, mobileOnly: Boolean): Map<Int, Long> =
+        withContext(Dispatchers.IO) {
+            val manager = nsm ?: return@withContext emptyMap()
+            if (!hasAccess()) return@withContext emptyMap()
+            val now = System.currentTimeMillis()
+            if (startMillis >= now) return@withContext emptyMap()
+            @Suppress("DEPRECATION")
+            val types = if (mobileOnly) intArrayOf(ConnectivityManager.TYPE_MOBILE) else NETWORK_TYPES
+            val out = HashMap<Int, Long>()
+            for (type in types) {
+                val stats = summary(manager, type, startMillis, now) ?: continue
+                try {
+                    val bucket = NetworkStats.Bucket()
+                    while (stats.hasNextBucket()) {
+                        if (!stats.getNextBucket(bucket)) break
+                        out[bucket.uid] = (out[bucket.uid] ?: 0L) + bucket.rxBytes + bucket.txBytes
+                    }
+                } catch (e: Exception) {
+                    // partial data beats none
+                } finally {
+                    closeQuietly(stats)
+                }
+            }
+            out
+        }
+
     fun startOfDay(day: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
         LocalDate.ofEpochDay(day).atStartOfDay(zone).toInstant().toEpochMilli()
 

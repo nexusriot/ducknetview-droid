@@ -451,6 +451,114 @@ class VpnCaptureE2ETest {
         }
     }
 
+    /**
+     * A domain rule refuses or cuts a flow, and says which rule did it.
+     *
+     * With Private DNS on, the device never learns the name before the
+     * connection opens, so the cut happens at the ClientHello; with plain DNS
+     * it is a refusal at SYN. Either way the flow must retire marked blocked
+     * with the rule as its reason, and the request must not succeed.
+     */
+    @Test
+    fun t15_aDomainRuleRefusesOrCutsTheFlow() {
+        val app = context.applicationContext as DuckApp
+        runBlocking { app.deps.settings.update { it.copy(firewallRules = it.firewallRules + "|gstatic.com") } }
+        try {
+            waitUntil(10_000) { VpnBridge.nameVerdict(Process.myUid(), "x.gstatic.com") != null }
+            assumeTrue("the rule never reached the capture engine",
+                VpnBridge.nameVerdict(Process.myUid(), "x.gstatic.com") != null)
+            val code = fetch("https://connectivitycheck.gstatic.com/generate_204")
+            assertTrue("a request to a blocked domain succeeded with $code", code != 204)
+            waitUntil(15_000) { blockedRows().any { it.blockReason.contains("gstatic.com") } }
+            val row = blockedRows().firstOrNull { it.blockReason.contains("gstatic.com") }
+            assertNotNull("no retired flow names the rule that refused it", row)
+        } finally {
+            runBlocking { app.deps.settings.update { it.copy(firewallRules = it.firewallRules - "|gstatic.com") } }
+        }
+    }
+
+    /** An address rule is decided at SYN, before any byte of the handshake. */
+    @Test
+    fun t16_anAddressRuleRefusesAtSyn() {
+        val app = context.applicationContext as DuckApp
+        val target = runCatching { InetAddress.getByName("one.one.one.one").hostAddress }.getOrNull()
+        assumeTrue("no DNS for the target", target != null)
+        val rule = "|$target"
+        runBlocking { app.deps.settings.update { it.copy(firewallRules = it.firewallRules + rule) } }
+        try {
+            waitUntil(10_000) { VpnBridge.verdict(Process.myUid(), target!!) != null }
+            val refused = runCatching {
+                Socket().use { it.connect(InetSocketAddress(target, 443), 5_000) }
+            }.isFailure
+            assertTrue("a connection to a blocked address was allowed to open", refused)
+            waitUntil(10_000) { blockedRows().any { it.remoteAddr == target && it.blockReason.startsWith("rule") } }
+            assertTrue(blockedRows().any { it.remoteAddr == target && it.blockReason.startsWith("rule") })
+        } finally {
+            runBlocking { app.deps.settings.update { it.copy(firewallRules = it.firewallRules - rule) } }
+        }
+    }
+
+    /** The negotiated TLS version is read off the server's first flight. */
+    @Test
+    fun t17_theNegotiatedTlsVersionIsRecorded() {
+        fetch("https://www.google.com/generate_204")
+        waitUntil(15_000) { allRows().any { it.remotePort == 443 && it.tls.isNotEmpty() } }
+        val row = allRows().firstOrNull { it.remotePort == 443 && it.tls.isNotEmpty() }
+        assertNotNull("no HTTPS flow recorded a TLS version", row)
+        assertTrue("unexpected version ${row!!.tls}", row.tls == "TLS 1.3" || row.tls == "TLS 1.2")
+    }
+
+    /** Plain HTTP is flagged on the row the screen renders. */
+    @Test
+    fun t18_cleartextHttpIsFlagged() {
+        val app = context.applicationContext as DuckApp
+        fetch("http://connectivitycheck.gstatic.com/generate_204")
+        fun flagged() = app.deps.engine.snapshot.value.let { s ->
+            s.conns.any { it.cleartext == "http" } || s.closedConns.any { it.row.cleartext == "http" }
+        }
+        waitUntil(15_000) { flagged() }
+        assertTrue("a plain-HTTP flow was not flagged as cleartext", flagged())
+    }
+
+    /** Reset ends a live flow: the app's socket sees the connection die. */
+    @Test
+    fun t19_aLiveFlowCanBeReset() {
+        val target = runCatching { InetAddress.getByName("one.one.one.one").hostAddress }.getOrNull()
+        assumeTrue("no DNS for the target", target != null)
+        Socket().use { sock ->
+            sock.connect(InetSocketAddress(target, 443), 10_000)
+            sock.soTimeout = 10_000
+            val key = observeKey { it.key.dstIp == target && it.key.dstPort == 443 }
+            assertNotNull("the open flow never appeared", key)
+            assertTrue("terminate found no live flow", VpnBridge.terminate(key!!))
+            val dead = runCatching {
+                // A reset socket fails on read or write; a live one would
+                // block until the timeout and then throw a different way.
+                sock.getOutputStream().write(ByteArray(1))
+                sock.getOutputStream().flush()
+                sock.getInputStream().read()
+            }.let { r -> r.isFailure || r.getOrNull() == -1 }
+            assertTrue("the socket survived a reset", dead)
+        }
+    }
+
+    private fun observeKey(predicate: (com.vlad.ducknetview.engine.vpn.Flow) -> Boolean): String? {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            VpnBridge.table?.live()?.firstOrNull(predicate)?.let { return it.key.toString() }
+            Thread.sleep(100)
+        }
+        return null
+    }
+
+    private fun allRows(): List<com.vlad.ducknetview.domain.model.ConnRow> {
+        val t = VpnBridge.table ?: return emptyList()
+        return t.live().map { t.toRow(it, System.currentTimeMillis(), "", "", 0, 0, false) } +
+            t.closedSnapshot().map { it.row }
+    }
+
+    private fun blockedRows() = allRows().filter { it.blocked }
+
     private fun blockedAttemptsFor(uid: Int): Long {
         val app = context.applicationContext as DuckApp
         return app.deps.engine.snapshot.value.apps

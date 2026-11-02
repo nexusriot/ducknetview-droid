@@ -1,5 +1,10 @@
 package com.vlad.ducknetview.engine
 
+import com.vlad.ducknetview.domain.asn.AsnTable
+import com.vlad.ducknetview.domain.firewall.AppPolicy
+import com.vlad.ducknetview.domain.net.Cleartext
+import com.vlad.ducknetview.domain.net.EncryptedDns
+import com.vlad.ducknetview.domain.usage.AppBudgets
 import com.vlad.ducknetview.domain.model.AppRow
 import com.vlad.ducknetview.domain.model.AppSettings
 import com.vlad.ducknetview.domain.model.Capabilities
@@ -64,6 +69,9 @@ class SnapshotAssembler(
     private var serviceScanAt: Long = 0L
     private var todayPerUid: Map<Int, Pair<Long, Long>> = emptyMap()
     private var blockedAttempts: Map<Int, Long> = emptyMap()
+    private var backgroundPerUid: Map<Int, Long> = emptyMap()
+    private var day: List<Float> = emptyList()
+    @Volatile private var asn: AsnTable = AsnTable.EMPTY
     private var neighbours: List<NeighbourRow> = emptyList()
     private var neighbourScanAt: Long = 0L
     private var neighbourSubnet: String = ""
@@ -111,6 +119,21 @@ class SnapshotAssembler(
      */
     fun setBlockedAttempts(byUid: Map<Int, Long>) {
         blockedAttempts = byUid
+    }
+
+    /** Today's background bytes per uid, from the same slow usage query. */
+    fun setBackgroundUsage(byUid: Map<Int, Long>) {
+        backgroundPerUid = byUid
+    }
+
+    /** The 24-hour series, read back from disk on its own slow cadence. */
+    fun setDay(series: List<Float>) {
+        day = series
+    }
+
+    /** The imported AS table; [AsnTable.EMPTY] when none, and then no OWNER exists. */
+    fun setAsn(table: AsnTable) {
+        asn = table
     }
 
     /** The billing cycle, refreshed on the slow usage cadence. */
@@ -171,7 +194,10 @@ class SnapshotAssembler(
             networks = networks,
             selectedNetworkId = networks.firstOrNull { it.isDefault }?.id,
             conns = conns,
-            closedConns = flows?.closedSnapshot() ?: emptyList(),
+            // Closed rows get the same flags as live ones: a plain-HTTP request
+            // is usually over before the next poll, so it is mostly here that
+            // "cleartext" is seen at all.
+            closedConns = flows?.closedSnapshot()?.map { it.copy(row = annotate(it.row)) } ?: emptyList(),
             apps = apps,
             services = markedServices,
             serviceScanAt = serviceScanAt,
@@ -198,6 +224,7 @@ class SnapshotAssembler(
             security = securityCounts(markedServices, conns),
             quota = quota,
             untrustedDefault = untrustedDefault,
+            day = day,
             frozen = false,
         )
     }
@@ -233,7 +260,7 @@ class SnapshotAssembler(
                 resolvedHost = host,
                 watchlisted = watchlist.matches(f.key.dstIp, host),
             )
-            out += row
+            out += annotate(row)
 
             if (rxBps > 0 || txBps > 0) {
                 val dRx = flowRates.deltaOf("$id|rx")
@@ -248,6 +275,17 @@ class SnapshotAssembler(
         seenConnKeys = keys
         return out
     }
+
+    /**
+     * Labels a flow's ports and address can support on their own: a
+     * cleartext protocol, an encrypted-DNS transport, the network's owner.
+     * None of them reads a payload.
+     */
+    fun annotate(row: ConnRow): ConnRow = row.copy(
+        cleartext = Cleartext.protocolOf(row.proto, row.remotePort) ?: "",
+        encryptedDns = EncryptedDns.kindOf(row.proto, row.remoteAddr, row.remotePort)?.label ?: "",
+        owner = if (row.scope == Scope.PUBLIC) asn.lookup(row.remoteAddr)?.label ?: "" else "",
+    )
 
     private fun buildApps(
         conns: List<ConnRow>,
@@ -264,8 +302,10 @@ class SnapshotAssembler(
         // entirely. Its row is the only place to unblock it, and the "blocked"
         // chip is supposed to list exactly these, so they are kept whether they
         // carried a packet this tick or not.
+        val policyUids = AppPolicy.decodeAll(settings.appPolicies).keys
+        val budgets = AppBudgets.decode(settings.appBudgets).associateBy { it.packageName }
         val uids = (if (vpnMode) byUid.keys.toSet() else api.perUid.keys) +
-            settings.blockedUids + settings.excludedUids
+            settings.blockedUids + settings.excludedUids + policyUids
         return uids.map { uid ->
             val rows = byUid[uid].orEmpty()
             val base = catalog.row(uid)
@@ -294,6 +334,8 @@ class SnapshotAssembler(
                 blocked = uid in settings.blockedUids,
                 excludedFromVpn = uid in settings.excludedUids,
                 blockedAttempts = blockedAttempts[uid] ?: 0L,
+                todayBackground = backgroundPerUid[uid] ?: -1L,
+                budgetBytes = budgets[base.packageName]?.capBytes ?: 0L,
             )
         }
     }
@@ -305,6 +347,7 @@ class SnapshotAssembler(
         publicConns = conns.count { it.scope == Scope.PUBLIC },
         watchlistHits = conns.count { it.watchlisted },
         offBaseline = services.count { it.offBaseline },
+        cleartextConns = conns.count { it.cleartext.isNotEmpty() },
     )
 
     private fun push(q: ArrayDeque<Float>, v: Float) {

@@ -39,6 +39,13 @@ class TcpConnection(
     private val scope: CoroutineScope,
     private val mtu: Int,
     private val onSni: (String) -> Unit = {},
+    /**
+     * The first bytes the server sent on a flow whose client opened with a
+     * TLS handshake, for the ServerHello's negotiated version. Called at most
+     * once, with the pump's scratch buffer: a consumer must read it before
+     * returning and keep nothing.
+     */
+    private val onServerHello: (ByteArray, Int) -> Unit = { _, _ -> },
     private val onClosed: (FlowKey) -> Unit,
 ) {
     private val key = flow.key
@@ -62,6 +69,7 @@ class TcpConnection(
 
     /** The SNI peek looks at the first in-order payload segment and no other. */
     private var sniChecked = false
+    @Volatile private var tlsClient = false
 
     @Volatile private var finSent = false
     @Volatile private var finReceived = false
@@ -185,6 +193,7 @@ class TcpConnection(
         if (sniChecked) return
         sniChecked = true
         if (!TlsPeek.looksLikeHandshake(buf, tcp.payloadOffset, tcp.payloadLength)) return
+        tlsClient = true
         val name = TlsPeek.serverName(buf, tcp.payloadOffset, tcp.payloadLength) ?: return
         runCatching { onSni(name) }
     }
@@ -211,6 +220,7 @@ class TcpConnection(
         // it, so the next read may overwrite it freely.
         val scratch = ByteArray(READ_CHUNK.coerceAtLeast(maxSegment))
         val bb = ByteBuffer.wrap(scratch)
+        var helloChecked = false
         try {
             while (scope.isActive && !aborted) {
                 bb.clear()
@@ -218,6 +228,10 @@ class TcpConnection(
                 if (n < 0) break
                 if (n == 0) continue
                 flow.rx.addAndGet(n.toLong())
+                if (!helloChecked) {
+                    helloChecked = true
+                    if (tlsClient) runCatching { onServerHello(scratch, n) }
+                }
                 if (!sendDownstream(scratch, n)) break
             }
             if (!aborted) {
@@ -310,8 +324,18 @@ class TcpConnection(
         emit(TcpFlag.RST or TcpFlag.ACK, window = 0)
     }
 
-    /** Refuse the flow outright — how a blocked app is enforced. */
-    fun reject() {
+    /**
+     * Refuse the flow outright — how the firewall is enforced.
+     *
+     * The RST must acknowledge the SYN it answers (RFC 9293 §3.10.7.1: ack =
+     * SEG.SEQ + 1), or the app's kernel discards it as unacceptable and keeps
+     * retransmitting the SYN until its connect times out. That is what this
+     * did when it was called before [onSyn] had recorded the sequence: every
+     * refused connection hung for the full timeout instead of failing at once,
+     * and a blocked app's retries were counted by the hundred.
+     */
+    fun reject(syn: TcpHeader) {
+        theirSeq = Packets.seqAdd(syn.seq, 1)
         flow.blocked = true
         sendRst()
         close()

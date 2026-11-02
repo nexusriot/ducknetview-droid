@@ -79,7 +79,7 @@ class PrometheusTest {
         assertEquals(
             "README.md and docs/DESIGN.md say how many families this emits; " +
                 "update both when this number changes",
-            49,
+            51,
             families(Prometheus.render(fullSnapshot())).size,
         )
     }

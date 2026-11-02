@@ -140,3 +140,16 @@ interface DomainDao {
     @Query("SELECT COUNT(*) FROM domains")
     suspend fun count(): Int
 }
+
+@Dao
+interface MinuteDao {
+
+    @Upsert
+    suspend fun upsert(e: MinuteEntity)
+
+    @Query("SELECT * FROM minute_history WHERE minute >= :from ORDER BY minute ASC")
+    suspend fun since(from: Long): List<MinuteEntity>
+
+    @Query("DELETE FROM minute_history WHERE minute < :cutoff")
+    suspend fun pruneBefore(cutoff: Long)
+}

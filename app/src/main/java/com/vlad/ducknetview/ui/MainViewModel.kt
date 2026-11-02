@@ -1,5 +1,13 @@
 package com.vlad.ducknetview.ui
 
+import com.vlad.ducknetview.domain.firewall.Blocklist
+import com.vlad.ducknetview.domain.diff.SnapshotDiffer
+import com.vlad.ducknetview.domain.firewall.AppPolicy
+import com.vlad.ducknetview.domain.firewall.FirewallRule
+import com.vlad.ducknetview.domain.model.ThroughputMode
+import com.vlad.ducknetview.domain.usage.AppBudget
+import com.vlad.ducknetview.domain.usage.AppBudgets
+import com.vlad.ducknetview.domain.views.SavedView
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
@@ -98,6 +106,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
 
     val tab: StateFlow<Tab> = tabFlow
 
+    private data class Extras(val blocklistSize: Int, val asnSize: Int, val diff: DiffView?)
+
+    private val diffFlow = MutableStateFlow<DiffView?>(null)
+
+    private val extrasFlow = combine(deps.imports.blocklist, deps.imports.asn, diffFlow) { b, a, d ->
+        Extras(b.size, a.size, d)
+    }
+
+    /** Which file the next system picker is for, beyond the snapshot viewer. */
+    enum class FilePick { BLOCKLIST, ASN, DIFF }
+
+    val filePickRequest = MutableStateFlow<FilePick?>(null)
+
+    fun consumeFilePickRequest() {
+        filePickRequest.value = null
+    }
+
     val state: StateFlow<UiState> = combine(
         deps.engine.snapshot,
         deps.settings.settings,
@@ -177,9 +202,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
         // which can change under a row (an app updating its name) and so is
         // resolved on read rather than frozen into the database.
         val watchlist = watchlistOf(settings.watchlist)
+        val listed = deps.imports.blocklist.value
+        val firewall = VpnBridge.firewall
         val domainsLabelled = liveDomains.map { d ->
             val app = deps.catalog.row(d.uid)
             d.copy(
+                listed = listed.isNotEmpty() && Blocklist.matches(listed, d.name),
+                blocked = firewall.nameVerdict(d.uid, d.name)?.startsWith("rule") == true,
                 appLabel = app.label,
                 packageName = app.packageName,
                 watchlisted = !watchlist.isEmpty &&
@@ -289,12 +318,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
             // real read or it flashes at users who dismissed it long ago.
             settingsLoaded = true,
         )
+    }.combine(extrasFlow) { ui, ex ->
+        val s = ui.settings
+        ui.copy(
+            savedViews = SavedView.decodeAll(s.savedViews),
+            firewallRules = s.firewallRules.mapNotNull(FirewallRule::decode),
+            appPolicies = AppPolicy.decodeAll(s.appPolicies),
+            appBudgets = AppBudgets.decode(s.appBudgets),
+            blocklistSize = ex.blocklistSize,
+            asnSize = ex.asnSize,
+            diff = ex.diff,
+            alwaysOn = ui.vpnRunning && VpnBridge.alwaysOn,
+            lockdown = ui.vpnRunning && VpnBridge.lockdown,
+            vpnConsentGranted = runCatching {
+                android.net.VpnService.prepare(getApplication()) == null
+            }.getOrDefault(false),
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiState())
 
     init {
         viewModelScope.launch {
+            // The engine gets settings from the app-lifetime collector in
+            // DuckApp; this one only follows the remembered tab.
             deps.settings.settings.collect { s ->
-                deps.engine.applySettings(s)
                 tabFlow.value = Tab.fromRoute(s.lastTab)
             }
         }
@@ -751,6 +797,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
     }
 
     override fun refreshExternalIp() {
+        if (!state.value.settings.externalIpEnabled) return
         viewModelScope.launch {
             runCatching { deps.externalIp.fetch() }
             status("external IP refreshed")
@@ -833,6 +880,193 @@ class MainViewModel(app: Application) : AndroidViewModel(app), UiActions {
 
     override fun dismissStatus() {
         statusFlow.value = null
+    }
+
+    override fun terminateConnection(key: String) {
+        status(if (VpnBridge.terminate(key)) "connection reset" else "that connection has already closed")
+    }
+
+    override fun addFirewallRule(pattern: String, packageName: String) {
+        val problem = FirewallRule.problem(pattern)
+        if (problem != null) {
+            status("cannot block \"$pattern\": $problem")
+            return
+        }
+        val rule = FirewallRule(FirewallRule.normalize(pattern), packageName)
+        edit { s ->
+            val encoded = rule.encode()
+            if (encoded in s.firewallRules) s else s.copy(firewallRules = s.firewallRules + encoded)
+        }
+        status(
+            "new connections to ${rule.pattern} are refused" +
+                if (packageName.isEmpty()) " for every app" else " for this app"
+        )
+    }
+
+    override fun removeFirewallRule(rule: FirewallRule) {
+        edit { s -> s.copy(firewallRules = s.firewallRules - rule.encode()) }
+        status("rule for ${rule.pattern} removed")
+    }
+
+    override fun setAppPolicy(policy: AppPolicy) {
+        edit { s ->
+            val others = s.appPolicies.filterNot { AppPolicy.decode(it)?.uid == policy.uid }.toSet()
+            s.copy(appPolicies = if (policy.isEmpty) others else others + policy.encode())
+        }
+        status("network policy updated")
+    }
+
+    override fun setAppBudget(packageName: String, capBytes: Long, block: Boolean) {
+        if (capBytes <= 0L) {
+            removeAppBudget(packageName)
+            return
+        }
+        edit { s ->
+            val others = AppBudgets.decode(s.appBudgets).filterNot { it.packageName == packageName }
+            s.copy(appBudgets = AppBudgets.encode(others + AppBudget(packageName, capBytes, block)))
+        }
+        status("allowance set")
+    }
+
+    override fun removeAppBudget(packageName: String) {
+        edit { s ->
+            s.copy(appBudgets = AppBudgets.encode(
+                AppBudgets.decode(s.appBudgets).filterNot { it.packageName == packageName }
+            ))
+        }
+        status("allowance removed")
+    }
+
+    override fun importBlocklist() {
+        filePickRequest.value = FilePick.BLOCKLIST
+    }
+
+    override fun clearBlocklist() {
+        viewModelScope.launch { deps.imports.clearBlocklist() }
+        status("block list removed")
+    }
+
+    override fun importAsn() {
+        filePickRequest.value = FilePick.ASN
+    }
+
+    override fun clearAsn() {
+        viewModelScope.launch { deps.imports.clearAsn() }
+        status("AS table removed")
+    }
+
+    override fun compareSnapshot() {
+        filePickRequest.value = FilePick.DIFF
+    }
+
+    override fun closeDiff() {
+        diffFlow.value = null
+    }
+
+    /** A file came back from the picker the request asked for. */
+    fun onFilePicked(kind: FilePick, uri: Uri, label: String) {
+        viewModelScope.launch {
+            when (kind) {
+                FilePick.BLOCKLIST -> runCatching { deps.imports.importBlocklist(uri) }
+                    .onSuccess { status("block list imported: $it ${plural(it, "name")}") }
+                    .onFailure { status("block list not imported: ${it.message}") }
+                FilePick.ASN -> runCatching { deps.imports.importAsn(uri) }
+                    .onSuccess { status("AS table imported: $it ${plural(it, "range")}") }
+                    .onFailure { status("AS table not imported: ${it.message}") }
+                FilePick.DIFF -> {
+                    val text = withContext(Dispatchers.IO) {
+                        runCatching {
+                            getApplication<Application>().contentResolver
+                                .openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        }.getOrNull()
+                    }
+                    val old = text?.let { runCatching { SnapshotJson.decode(it) }.getOrNull() }
+                    if (old == null) {
+                        status("that file is not a ducknetview snapshot")
+                        return@launch
+                    }
+                    diffFlow.value = DiffView(label, SnapshotDiffer.diff(old, deps.engine.snapshot.value))
+                }
+            }
+        }
+    }
+
+    override fun saveView(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            status("a view needs a name")
+            return
+        }
+        val s = state.value
+        val f = s.filters
+        val view = SavedView(
+            name = trimmed,
+            tab = tabFlow.value.route,
+            query = s.search.query,
+            highlight = s.settings.searchMode == SearchMode.HIGHLIGHT,
+            proto = f.proto.name,
+            ipVersion = f.ipVersion.name,
+            state = f.state.name,
+            publicOnly = f.publicOnly,
+            userAppsOnly = f.userAppsOnly,
+            network = f.network.orEmpty(),
+            connsSortCol = s.settings.connsSortCol,
+            connsSortDesc = s.settings.connsSortDesc,
+            groupByHost = s.settings.groupByHost,
+            showClosed = s.settings.showClosed,
+            totals = s.settings.throughputMode == ThroughputMode.TOTAL,
+            revDns = s.settings.revDns,
+        )
+        edit { st ->
+            val views = SavedView.upsert(SavedView.decodeAll(st.savedViews), view)
+            st.copy(savedViews = views.map { it.encode() })
+        }
+        status("view \"$trimmed\" saved")
+    }
+
+    // Read from disk rather than from [state]: a launcher shortcut applies a
+    // view before the first settings read has reached the screen.
+    override fun applyView(name: String) {
+        viewModelScope.launch {
+            val view = SavedView.decodeAll(deps.settings.snapshot().savedViews)
+                .firstOrNull { it.name == name }
+            if (view == null) status("no saved view called \"$name\"") else apply(view)
+        }
+    }
+
+    private fun apply(view: SavedView) {
+        filtersFlow.value = QuickFilters(
+            proto = ProtoFilter.entries.firstOrNull { it.name == view.proto } ?: ProtoFilter.ALL,
+            ipVersion = IpVersionFilter.entries.firstOrNull { it.name == view.ipVersion } ?: IpVersionFilter.ALL,
+            state = StateFilter.entries.firstOrNull { it.name == view.state } ?: StateFilter.ALL,
+            publicOnly = view.publicOnly,
+            userAppsOnly = view.userAppsOnly,
+            network = view.network.ifEmpty { null },
+        )
+        searchFlow.value = SearchState(query = view.query)
+        matchCursorFlow.value = -1
+        val tab = Tab.fromRoute(view.tab)
+        tabFlow.value = tab
+        edit { s ->
+            s.copy(
+                lastTab = tab.route,
+                searchMode = if (view.highlight) SearchMode.HIGHLIGHT else SearchMode.FILTER,
+                connsSortCol = view.connsSortCol,
+                connsSortDesc = view.connsSortDesc,
+                groupByHost = view.groupByHost,
+                showClosed = view.showClosed,
+                throughputMode = if (view.totals) ThroughputMode.TOTAL else ThroughputMode.RATE,
+                revDns = view.revDns,
+            )
+        }
+        status("view \"${view.name}\"")
+    }
+
+    override fun deleteView(name: String) {
+        edit { s ->
+            s.copy(savedViews = SavedView.decodeAll(s.savedViews).filterNot { it.name == name }.map { it.encode() })
+        }
+        status("view \"$name\" deleted")
     }
 
     private fun plural(n: Int, word: String) = if (n == 1) word else "${word}s"

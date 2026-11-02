@@ -11,6 +11,9 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.vlad.ducknetview.DuckApp
+import com.vlad.ducknetview.domain.firewall.Firewall
+import com.vlad.ducknetview.domain.firewall.LinkContext
 import com.vlad.ducknetview.domain.net.OwnTunnel
 import com.vlad.ducknetview.domain.model.BlockedAttempt
 import com.vlad.ducknetview.domain.model.DomainObservation
@@ -22,6 +25,7 @@ import com.vlad.ducknetview.engine.vpn.packet.IpHeader
 import com.vlad.ducknetview.engine.vpn.packet.IpProto
 import com.vlad.ducknetview.engine.vpn.packet.PacketParser
 import com.vlad.ducknetview.engine.vpn.packet.TlsPeek
+import com.vlad.ducknetview.engine.vpn.packet.TlsServerHelloPeek
 import com.vlad.ducknetview.service.Notifications
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,6 +64,9 @@ class DuckVpnService : VpnService() {
 
     private lateinit var connectivity: ConnectivityManager
 
+    /** Fixed for the life of one TUN; a new value takes effect on the next start. */
+    private var mtu = MTU
+
     override fun onCreate() {
         super.onCreate()
         connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -77,6 +84,10 @@ class DuckVpnService : VpnService() {
 
     private fun startEngine() {
         if (tunFd != null) return
+        // Capture can start with no screen open — the tile, boot, the
+        // system's always-on VPN — and the poll loop is what turns flows into
+        // events, alerts and names. Idempotent when the UI already started it.
+        (application as? DuckApp)?.deps?.engine?.start()
 
         val notification = Notifications.engineNotification(this, 0L, 0L)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -90,9 +101,10 @@ class DuckVpnService : VpnService() {
             startForeground(Notifications.ENGINE_ID, notification)
         }
 
+        mtu = VpnBridge.tunMtu
         val builder = Builder()
             .setSession(SESSION)
-            .setMtu(MTU)
+            .setMtu(mtu)
             .addAddress(TUN_V4, 30)
             .addRoute("0.0.0.0", 0)
             .addAddress(TUN_V6, 126)
@@ -126,6 +138,9 @@ class DuckVpnService : VpnService() {
         tunFd = fd
         val s = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = s
+        VpnBridge.terminator = { keyText -> terminate(keyText) }
+        VpnBridge.alwaysOn = runCatching { isAlwaysOn }.getOrDefault(false)
+        VpnBridge.lockdown = runCatching { isLockdownEnabled }.getOrDefault(false)
         VpnBridge.attach(table)
 
         s.launch { readLoop(FileInputStream(fd.fileDescriptor)) }
@@ -152,7 +167,7 @@ class DuckVpnService : VpnService() {
     }
 
     private suspend fun readLoop(input: FileInputStream) {
-        val buffer = ByteArray(MTU + 80)
+        val buffer = ByteArray(mtu + 80)
         val writer = QueueWriter()
         // The parser's scratch headers belong to this loop alone, and stay
         // valid only for the dispatch call they were filled for.
@@ -206,14 +221,25 @@ class DuckVpnService : VpnService() {
                     tun = writer,
                     protect = { sock -> protect(sock) },
                     scope = scope ?: return@synchronized null,
-                    mtu = MTU,
-                    onSni = { name -> VpnBridge.noteSni(key.dstIp, name, flow.uid) },
+                    mtu = mtu,
+                    onSni = { name ->
+                        VpnBridge.noteSni(key.dstIp, name, flow.uid)
+                        cutIfNamedBlocked(key, flow, Proto.TCP, name)
+                    },
+                    onServerHello = { data, n ->
+                        TlsServerHelloPeek.parse(data, 0, n)?.let {
+                            flow.tls = it.version.label
+                            flow.tlsDeprecated = it.version.deprecated
+                        }
+                    },
                     onClosed = { k -> closeTcp(k) },
                 )
                 tcpFlows[key] = c
-                if (VpnBridge.isBlocked(flow.uid)) {
-                    c.reject()
-                    VpnBridge.noteBlocked(key, Proto.TCP, now, flow.uid)
+                val reason = VpnBridge.verdict(flow.uid, key.dstIp)
+                if (reason != null) {
+                    flow.blockReason = reason
+                    c.reject(tcp)
+                    VpnBridge.noteBlocked(key, Proto.TCP, now, flow.uid, reason)
                     return@synchronized null
                 }
                 c.onSyn(tcp, now)
@@ -242,7 +268,8 @@ class DuckVpnService : VpnService() {
                 val flow = table.open(key, ip.version, now)
                 flow.uid = lookupUid(IpProto.UDP, ip.srcIp, udp.srcPort, ip.dstIp, udp.dstPort)
                 flow.network = VpnBridge.currentNetworkLabel
-                if (VpnBridge.isBlocked(flow.uid)) {
+                val reason = VpnBridge.verdict(flow.uid, key.dstIp)
+                if (reason != null) {
                     // The TCP side refuses a blocked flow through reject(),
                     // which marks it and resolves its app label. This path used
                     // to close the flow bare: the row landed in closed history
@@ -251,8 +278,9 @@ class DuckVpnService : VpnService() {
                     // !row.blocked — would re-block rather than unblock it.
                     // With QUIC this is the common case, not the rare one.
                     flow.blocked = true
+                    flow.blockReason = reason
                     retire(key, now)
-                    VpnBridge.noteBlocked(key, Proto.UDP, now, flow.uid)
+                    VpnBridge.noteBlocked(key, Proto.UDP, now, flow.uid, reason)
                     return@synchronized null
                 }
                 c = UdpConnection(
@@ -267,7 +295,10 @@ class DuckVpnService : VpnService() {
                     // The same sink a TLS ClientHello feeds. A name is a name
                     // whichever handshake carried it, and the Domains screen
                     // labels the row with where it came from.
-                    onSni = { name -> VpnBridge.noteQuicSni(key.dstIp, name, flow.uid) },
+                    onSni = { name ->
+                        VpnBridge.noteQuicSni(key.dstIp, name, flow.uid)
+                        cutIfNamedBlocked(key, flow, Proto.UDP, name)
+                    },
                     onClosed = { k -> closeUdp(k) },
                 )
                 if (!c.start(now)) {
@@ -320,7 +351,7 @@ class DuckVpnService : VpnService() {
                         PingSockets.open(version, protect = { fd -> protect(fd) })
                     },
                     scope = scope ?: return@synchronized null,
-                    mtu = MTU,
+                    mtu = mtu,
                     onClosed = { k -> closeIcmp(k) },
                 )
                 if (!c.start(now)) {
@@ -359,6 +390,44 @@ class DuckVpnService : VpnService() {
                 )
             )
         }
+    }
+
+    /**
+     * A handshake on an open flow named a host the firewall refuses.
+     *
+     * The flow could not be refused when it opened — nothing knew its name
+     * yet, which is the normal case with Private DNS on — so it is cut now,
+     * before the handshake completes. The ClientHello that carried the name
+     * is dropped with it rather than relayed.
+     */
+    private fun cutIfNamedBlocked(key: FlowKey, flow: Flow, proto: Proto, name: String) {
+        val reason = VpnBridge.nameVerdict(flow.uid, name) ?: return
+        flow.blocked = true
+        flow.blockReason = reason
+        VpnBridge.noteBlocked(key, proto, System.currentTimeMillis(), flow.uid, reason)
+        val conn = synchronized(flowLock) { tcpFlows[key] ?: udpFlows[key] }
+        when (conn) {
+            is TcpConnection -> conn.abort()
+            is UdpConnection -> conn.close()
+        }
+    }
+
+    /**
+     * End one live flow on the user's say-so: a reset towards the app and the
+     * upstream socket closed. Answers whether a flow by that key was live.
+     */
+    private fun terminate(keyText: String): Boolean {
+        val found = synchronized(flowLock) {
+            tcpFlows.entries.firstOrNull { it.key.toString() == keyText }?.value
+                ?: udpFlows.entries.firstOrNull { it.key.toString() == keyText }?.value
+                ?: icmpFlows.entries.firstOrNull { it.key.toString() == keyText }?.value
+        } ?: return false
+        when (found) {
+            is TcpConnection -> found.abort()
+            is UdpConnection -> found.close()
+            is IcmpConnection -> found.close()
+        }
+        return true
     }
 
     /**
@@ -484,6 +553,7 @@ class DuckVpnService : VpnService() {
         tunFd = null
         pool.clear()
         table.clear()
+        VpnBridge.terminator = { false }
         VpnBridge.detach()
         ServiceCompat.stopForeground(this, Service.STOP_FOREGROUND_REMOVE)
     }
@@ -554,7 +624,34 @@ object VpnBridge {
      *  through the TUN, which is the only way to assert capture end to end. */
     @Volatile var captureOwnTraffic: Boolean = false
 
-    @Volatile private var blockedUids: Set<Int> = emptySet()
+    /** The compiled firewall the packet path consults on every new flow. */
+    @Volatile var firewall: Firewall = Firewall.EMPTY
+
+    /** Where new connections currently leave by, for per-app network policies. */
+    @Volatile var linkContext: LinkContext = LinkContext()
+
+    /**
+     * Whether the system started this as the always-on VPN, and whether it
+     * blocks connections without it. Lockdown matters to the user: with it on,
+     * stopping capture here cuts the whole device off, not just monitoring.
+     */
+    @Volatile var alwaysOn: Boolean = false
+    @Volatile var lockdown: Boolean = false
+
+    /** The MTU the next TUN is built with. */
+    @Volatile var tunMtu: Int = DuckVpnService.MTU
+
+    /** Ends one live flow by its key; installed by the running service. */
+    @Volatile var terminator: (String) -> Boolean = { false }
+
+    /**
+     * Address to name, for the firewall's decision when a flow opens. The
+     * connection table's cache is not safe to read from the packet path —
+     * its LRU order moves on every get — so the packet path keeps its own,
+     * bounded loosely: past the cap it is cleared rather than evicted, which
+     * costs a few names for one tick instead of a lock per lookup.
+     */
+    private val names = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     @Volatile var labelResolver: (Int) -> Pair<String, String> = { "" to "" }
 
@@ -577,15 +674,27 @@ object VpnBridge {
         _running.value = false
     }
 
-    fun setBlocked(uids: Set<Int>) {
-        blockedUids = uids
-    }
+    fun isBlocked(uid: Int): Boolean = firewall.isAppBlocked(uid)
 
-    fun isBlocked(uid: Int): Boolean = uid in blockedUids
+    /** Why a new flow from [uid] to [ip] must be refused, or null. */
+    fun verdict(uid: Int, ip: String): String? =
+        firewall.verdict(uid, ip, names[ip], linkContext)
+
+    fun nameVerdict(uid: Int, name: String): String? = firewall.nameVerdict(uid, name)
+
+    fun terminate(key: String): Boolean = terminator(key)
+
+    private fun rememberName(ip: String, name: String) {
+        if (names.size >= MAX_NAMES) names.clear()
+        names[ip] = name
+    }
 
     fun labelFor(uid: Int): Pair<String, String> = labelResolver(uid)
 
-    fun noteDnsAnswer(ip: String, name: String) = dnsSink(ip, name)
+    fun noteDnsAnswer(ip: String, name: String) {
+        rememberName(ip, name)
+        dnsSink(ip, name)
+    }
 
     fun noteDomain(observation: DomainObservation) = domainSink(observation)
 
@@ -596,13 +705,14 @@ object VpnBridge {
      * the package manager on the packet path, once per retry, for an app that
      * by definition retries hard.
      */
-    fun noteBlocked(key: FlowKey, proto: Proto, at: Long, uid: Int) = blockedSink(
+    fun noteBlocked(key: FlowKey, proto: Proto, at: Long, uid: Int, reason: String = "") = blockedSink(
         BlockedAttempt(
             uid = uid,
             proto = proto,
             remoteAddr = key.dstIp,
             remotePort = key.dstPort,
             at = at,
+            reason = reason,
         )
     )
 
@@ -625,6 +735,7 @@ object VpnBridge {
     fun noteQuicSni(ip: String, name: String, uid: Int) = noteName(ip, name, uid, NameSource.QUIC)
 
     private fun noteName(ip: String, name: String, uid: Int, source: NameSource) {
+        rememberName(ip, name)
         dnsSink(ip, name)
         domainSink(
             DomainObservation(
@@ -651,4 +762,6 @@ object VpnBridge {
     }
 
     fun updateNotification(context: Context) = notificationUpdater(context)
+
+    private const val MAX_NAMES = 8192
 }

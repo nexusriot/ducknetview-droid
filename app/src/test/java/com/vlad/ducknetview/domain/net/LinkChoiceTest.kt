@@ -31,6 +31,18 @@ class LinkChoiceTest {
     }
 
     @Test
+    fun `a sweep walks the wifi link while capture owns the default route`() {
+        // Found on the M10: the Hosts sweep reported "10.215.173.1/30 + ff02::1
+        // on tun0" — it had swept this app's own tunnel.
+        val networks = listOf(
+            Fixtures.network(id = "tun", ifaceName = "tun0", transport = Transport.VPN, isDefault = true),
+            Fixtures.network(id = "lo", ifaceName = "lo", transport = Transport.LOOPBACK),
+            Fixtures.network(id = "wifi", ifaceName = "wlan0", isDefault = false),
+        )
+        assertEquals("wlan0", LinkChoice.sweepLink(networks)?.ifaceName)
+    }
+
+    @Test
     fun `prefers the default network when it is not a vpn`() {
         val networks = listOf(
             Fixtures.network(

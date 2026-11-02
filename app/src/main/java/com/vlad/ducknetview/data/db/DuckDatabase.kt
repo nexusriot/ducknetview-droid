@@ -16,8 +16,9 @@ import java.time.ZoneId
         ClosedConnEntity::class,
         HostSeenEntity::class,
         DomainEntity::class,
+        MinuteEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class DuckDatabase : RoomDatabase() {
@@ -27,6 +28,7 @@ abstract class DuckDatabase : RoomDatabase() {
     abstract fun closedConns(): ClosedConnDao
     abstract fun hostsSeen(): HostSeenDao
     abstract fun domains(): DomainDao
+    abstract fun minutes(): MinuteDao
 
     companion object {
         const val NAME = "ducknetview.db"
@@ -95,6 +97,25 @@ abstract class DuckDatabase : RoomDatabase() {
         }
 
         /**
+         * Adds the 24-hour throughput history. Hand-written for the same
+         * reason as [MIGRATION_2_3]: the tables beside it are the user's
+         * history, and a new table is no reason to drop them.
+         */
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `minute_history` (" +
+                        "`minute` INTEGER NOT NULL, " +
+                        "`rxPeakBps` INTEGER NOT NULL, " +
+                        "`txPeakBps` INTEGER NOT NULL, " +
+                        "`rxBytes` INTEGER NOT NULL, " +
+                        "`txBytes` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`minute`))"
+                )
+            }
+        }
+
+        /**
          * No real day number reaches this, and every millisecond timestamp
          * since 1973 exceeds it, so it separates the two unambiguously.
          */
@@ -113,7 +134,7 @@ abstract class DuckDatabase : RoomDatabase() {
                     // Everything here is derived monitoring history, so a
                     // downgrade may throw it away rather than refuse to open.
                     .fallbackToDestructiveMigrationOnDowngrade()
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { instance = it }
             }

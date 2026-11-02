@@ -1,0 +1,1 @@
+Firewall rules, block lists and per-app network policies; per-app allowances; background-data alerts; cleartext and old-TLS flagging; recovery events; 24-hour history; saved views; network owners from an imported ip2asn table; snapshot comparison; widget; automation intents; start on boot; IPv6 host discovery; adjustable TUN MTU.

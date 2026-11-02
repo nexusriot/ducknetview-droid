@@ -146,6 +146,13 @@ fun DomainsScreen(
                     modifier = tableModifier.testTag(emptyTag(EMPTY_DOMAINS)),
                 )
 
+                state.domains.isEmpty() && (state.search.active || state.filters.any) -> EmptyState(
+                    title = EMPTY_NO_MATCH,
+                    message = "The search or a filter hides every name. Clear them to see " +
+                        "the rest.",
+                    modifier = tableModifier.testTag(emptyTag(EMPTY_NO_MATCH)),
+                )
+
                 state.domains.isEmpty() && !state.caps.hasConnections -> EmptyState(
                     title = EMPTY_DOMAINS_NO_CAPTURE,
                     message = "Names are read off the traffic the capture engine relays. " +
@@ -258,6 +265,12 @@ private fun DomainSheetActions(row: DomainRow, actions: UiActions) {
     ) {
         Text(if (row.watchlisted) "Remove from watchlist" else "Add to watchlist")
     }
+    if (!row.blocked) {
+        TextButton(
+            onClick = { actions.addFirewallRule(row.name, "") },
+            modifier = Modifier.testTag("sheet:block-domain"),
+        ) { Text("Block") }
+    }
     if (row.uid >= 0) {
         TextButton(
             onClick = { actions.setUidFilter(row.uid) },
@@ -292,8 +305,21 @@ private fun DomainRowItem(
                 query = state.highlightQuery,
                 isRegex = state.highlightIsRegex,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (row.watchlisted) DuckColors.Watchlist else MaterialTheme.colorScheme.onSurface,
+                color = when {
+                    row.blocked -> DuckColors.Alert
+                    row.watchlisted -> DuckColors.Watchlist
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
             )
+            if (row.listed || row.blocked) {
+                Text(
+                    listOfNotNull("on block list".takeIf { row.listed }, "blocked".takeIf { row.blocked })
+                        .joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DuckColors.Warn,
+                    modifier = Modifier.testTag("domain:listed:${row.name}:${row.uid}"),
+                )
+            }
             Text(
                 text = buildString {
                     append(appDisplayName(row.appLabel, row.packageName, row.uid))
@@ -339,6 +365,8 @@ private fun domainDetailLines(row: DomainRow, now: Long): List<Pair<String, Stri
     "Age" to Units.age(if (row.firstSeen > 0L) now - row.firstSeen else -1L),
     "Addresses" to row.addresses.joinToString(", ").ifEmpty { "-" },
     "Watchlisted" to if (row.watchlisted) "yes" else "no",
+    "On block list" to if (row.listed) "yes" else "no",
+    "Blocked" to if (row.blocked) "yes" else "no",
 )
 
 /** Tab-separated, so a copied row pastes into a spreadsheet as the TUI's does. */

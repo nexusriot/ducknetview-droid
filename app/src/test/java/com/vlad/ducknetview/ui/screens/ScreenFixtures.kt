@@ -271,6 +271,13 @@ class RecordingActions(initial: AppSettings = AppSettings()) : UiActions {
     var usageAccessCount = 0
     var refreshUsageCount = 0
 
+    val args = mutableListOf<Pair<String, Any?>>()
+
+    private fun recArg(name: String, arg: Any?) {
+        args += name to arg
+        rec(name)
+    }
+
     private fun rec(name: String) {
         calls.add(name)
     }
@@ -338,6 +345,22 @@ class RecordingActions(initial: AppSettings = AppSettings()) : UiActions {
     override fun requestUsageAccess() { usageAccessCount++; rec("requestUsageAccess") }
     override fun requestWifiPermission() = rec("requestWifiPermission")
     override fun dismissStatus() = rec("dismissStatus")
+
+    override fun terminateConnection(key: String) = recArg("terminateConnection", key)
+    override fun addFirewallRule(pattern: String, packageName: String) = recArg("addFirewallRule", "$packageName|$pattern")
+    override fun removeFirewallRule(rule: com.vlad.ducknetview.domain.firewall.FirewallRule) = recArg("removeFirewallRule", rule)
+    override fun setAppPolicy(policy: com.vlad.ducknetview.domain.firewall.AppPolicy) = recArg("setAppPolicy", policy)
+    override fun setAppBudget(packageName: String, capBytes: Long, block: Boolean) = recArg("setAppBudget", "$packageName|$capBytes|$block")
+    override fun removeAppBudget(packageName: String) = recArg("removeAppBudget", packageName)
+    override fun importBlocklist() = recArg("importBlocklist", null)
+    override fun clearBlocklist() = recArg("clearBlocklist", null)
+    override fun importAsn() = recArg("importAsn", null)
+    override fun clearAsn() = recArg("clearAsn", null)
+    override fun saveView(name: String) = recArg("saveView", name)
+    override fun applyView(name: String) = recArg("applyView", name)
+    override fun deleteView(name: String) = recArg("deleteView", name)
+    override fun compareSnapshot() = recArg("compareSnapshot", null)
+    override fun closeDiff() = recArg("closeDiff", null)
 
     var openSnapshotCount = 0
     override fun openSnapshot() { openSnapshotCount++ }

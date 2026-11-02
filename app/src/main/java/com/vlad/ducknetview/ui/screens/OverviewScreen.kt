@@ -88,6 +88,20 @@ fun OverviewScreen(
             TopTalkersCard(state)
         }
 
+        // The one chart that survives a restart: read back from disk, so
+        // "when did that spike happen" has an answer after the app was killed.
+        if (snap.day.any { it > 0f }) {
+            SectionCard(title = "Last 24 hours") {
+                Text(
+                    text = "peak ${Units.rate(snap.day.max().toLong(), state.settings.rateUnit)} · 15-minute buckets, oldest left",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("overview:day"),
+                )
+                BarChart(values = snap.day, color = DuckColors.Rx)
+            }
+        }
+
         if (snap.engine == EngineMode.VPN) {
             SectionCard(title = "Connection churn") {
                 Text(
@@ -231,6 +245,26 @@ private fun SecurityCard(state: UiState, actions: UiActions) {
                 tint = if (sec.offBaseline > 0) DuckColors.Alert else null,
                 onClick = { actions.setTab(Tab.SERVICES) },
             )
+        }
+        // Cleartext needs the connection table, so outside capture the tile
+        // would be a permanent zero that means "not measured".
+        if (state.caps.hasConnections) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatTile(
+                    label = "Cleartext",
+                    value = sec.cleartextConns.toString(),
+                    modifier = Modifier.weight(1f),
+                    tint = if (sec.cleartextConns > 0) DuckColors.Warn else null,
+                    onClick = { actions.setTab(Tab.CONNECTIONS) },
+                )
+                StatTile(
+                    label = "Old TLS",
+                    value = state.snapshot.conns.count { it.tlsDeprecated }.toString(),
+                    modifier = Modifier.weight(1f),
+                    tint = if (state.snapshot.conns.any { it.tlsDeprecated }) DuckColors.Warn else null,
+                    onClick = { actions.setTab(Tab.CONNECTIONS) },
+                )
+            }
         }
     }
 }

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0 platform-tools"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The arch/ guards are source scans; they run as part of the unit suite.
+      # Instrumented tests stay manual: they need a real link and the VPN
+      # consent pre-authorised with appops (see run-device-e2e.sh).
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build debug APK and the instrumented test APK
+        run: ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: app/build/reports/
+          retention-days: 7

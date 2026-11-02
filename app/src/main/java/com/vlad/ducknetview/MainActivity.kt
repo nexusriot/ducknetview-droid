@@ -62,6 +62,8 @@ import com.vlad.ducknetview.ui.screens.OverviewScreen
 import com.vlad.ducknetview.ui.screens.RoutesScreen
 import com.vlad.ducknetview.ui.screens.ServicesScreen
 import com.vlad.ducknetview.ui.screens.UsageScreen
+import com.vlad.ducknetview.ui.screens.DiffScreen
+import com.vlad.ducknetview.ui.ViewShortcuts
 import com.vlad.ducknetview.ui.screens.SettingsScreen
 import com.vlad.ducknetview.ui.theme.DuckTheme
 
@@ -76,10 +78,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // The Quick Settings tile cannot raise the VPN consent dialog itself,
         // so it hands the request here instead of failing silently.
-        if (intent?.getBooleanExtra(EXTRA_START_CAPTURE, false) == true) {
-            intent.removeExtra(EXTRA_START_CAPTURE)
-            vm.startVpn()
-        }
+        handleLaunchExtras(intent)
         setContent {
             DuckTheme {
                 val state by vm.state.collectAsStateWithLifecycle()
@@ -141,6 +140,25 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val wantsFile by vm.filePickRequest.collectAsStateWithLifecycle()
+                var pendingPick by rememberSaveable { mutableStateOf<MainViewModel.FilePick?>(null) }
+                val fileLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    val kind = pendingPick
+                    pendingPick = null
+                    if (uri != null && kind != null) vm.onFilePicked(kind, uri, displayNameOf(uri))
+                }
+                LaunchedEffect(wantsFile) {
+                    val kind = wantsFile ?: return@LaunchedEffect
+                    vm.consumeFilePickRequest()
+                    pendingPick = kind
+                    fileLauncher.launch(arrayOf("*/*"))
+                }
+                LaunchedEffect(state.savedViews) {
+                    ViewShortcuts.publish(this@MainActivity, state.savedViews)
+                }
+
                 AdaptiveScaffold(
                     state = state,
                     actions = vm,
@@ -180,7 +198,10 @@ class MainActivity : ComponentActivity() {
                             onInfo = { showInfo = true },
                         )
                         Box(Modifier.fillMaxSize()) {
-                            when (overlay) {
+                            val diff = state.diff
+                            if (diff != null) {
+                                DiffScreen(diff, vm)
+                            } else when (overlay) {
                                 Overlay.SETTINGS -> SettingsScreen(state, vm)
                                 Overlay.USAGE ->
                                     UsageScreen(state, vm, twoPane = widthDp >= TWO_PANE_MIN_WIDTH_DP)
@@ -206,6 +227,31 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Without this a later rotation re-reads the launch intent, and a
+        // second shortcut tap would be answered with the first one's view.
+        setIntent(intent)
+        handleLaunchExtras(intent)
+    }
+
+    /**
+     * The tile asks for capture when consent is still needed; a launcher
+     * shortcut names a saved view. Both are consumed so a rotation does not
+     * repeat them.
+     */
+    private fun handleLaunchExtras(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_START_CAPTURE, false) == true) {
+            intent.removeExtra(EXTRA_START_CAPTURE)
+            vm.startVpn()
+        }
+        val view = intent?.getStringExtra(EXTRA_VIEW)
+        if (!view.isNullOrEmpty()) {
+            intent.removeExtra(EXTRA_VIEW)
+            vm.applyView(view)
         }
     }
 
@@ -316,6 +362,9 @@ class MainActivity : ComponentActivity() {
 
         /** Set by the Quick Settings tile when capture still needs consent. */
         const val EXTRA_START_CAPTURE = "start_capture"
+
+        /** Set by a saved view's launcher shortcut. */
+        const val EXTRA_VIEW = "saved_view"
         fun intentFor(activity: Activity, tab: Tab): Intent =
             Intent(activity, MainActivity::class.java).putExtra(EXTRA_TAB, tab.route)
     }

@@ -147,7 +147,16 @@ fun EventsScreen(
         HorizontalDivider()
 
         val table: @Composable (Modifier) -> Unit = { tableModifier ->
-            if (state.events.isEmpty()) {
+            if (state.events.isEmpty() && !state.snapshot.frozen &&
+                (state.search.active || state.eventFilter != EventLevelFilter.ALL)
+            ) {
+                EmptyState(
+                    title = EMPTY_NO_MATCH,
+                    message = "The search or the level filter hides every event. Clear " +
+                        "them to see the rest of the log.",
+                    modifier = tableModifier.testTag(emptyTag(EMPTY_NO_MATCH)),
+                )
+            } else if (state.events.isEmpty()) {
                 EmptyState(
                     title = EMPTY_EVENTS,
                     message = if (state.snapshot.frozen) {

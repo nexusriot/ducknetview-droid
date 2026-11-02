@@ -85,11 +85,36 @@ data class AppSettings(
     /** Scan this device's own listeners on joining an untrusted network. */
     val autoScanOnUntrusted: Boolean = false,
     val alertsAckedAt: Long = 0L,
+    /** Start capture after a reboot — only ever once VPN consent exists. */
+    val startOnBoot: Boolean = false,
+    /** Warn when one app moves this many bytes in the background today; zero is off. */
+    val alertBackgroundBytes: Long = 0L,
+    /** Encoded [com.vlad.ducknetview.domain.firewall.FirewallRule]s. */
+    val firewallRules: List<String> = emptyList(),
+    /** Encoded [com.vlad.ducknetview.domain.firewall.AppPolicy]s, one per uid. */
+    val appPolicies: Set<String> = emptySet(),
+    /** Enforce the imported hosts-format block list (it is always used for labels). */
+    val blocklistEnabled: Boolean = false,
+    /** Encoded [com.vlad.ducknetview.domain.views.SavedView]s, in the user's order. */
+    val savedViews: List<String> = emptyList(),
+    /**
+     * The TUN's MTU. 1500 matches the links underneath; larger values cut
+     * packets, writes and ACKs on the relay but change what apps put on the
+     * wire through the tunnel, so it is the user's experiment to run.
+     */
+    val tunMtu: Int = DEFAULT_MTU,
+    /** Encoded per-app allowances; see [com.vlad.ducknetview.domain.usage.AppBudgets]. */
+    val appBudgets: Set<String> = emptySet(),
+    /** Accept the exported automation intents (Tasker and the like). */
+    val automationEnabled: Boolean = false,
     /** False until the first-run explainer has been seen and dismissed. */
     val onboardingShown: Boolean = false,
 ) {
     companion object {
         /** The TUI's `+`/`-` steps: 1 s to 10 s. */
         val INTERVAL_STEPS = listOf(1, 2, 3, 5, 10)
+
+        const val DEFAULT_MTU = 1500
+        val MTU_STEPS = listOf(1500, 4000, 9000, 16000)
     }
 }

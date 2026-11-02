@@ -2,6 +2,8 @@
 
 package com.vlad.ducknetview.ui.screens
 
+import com.vlad.ducknetview.domain.model.ConnState
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -220,6 +222,7 @@ fun ConnectionsScreen(
                             modifier = Modifier.fillMaxWidth().testTag(TAG_DETAIL_SHEET),
                         ) {
                             lines.forEach { (k, v) -> KeyValueRow(label = k, value = v) }
+                            if (liveConn != null) ConnFlowActions(liveConn, state, actions)
                             Row {
                                 if (liveConn != null) {
                                     ConnSheetActions(liveConn, actions)
@@ -250,6 +253,7 @@ fun ConnectionsScreen(
                     },
                     onDismiss = { selectedConn = null },
                     actions = { ConnSheetActions(liveConn, actions) },
+                    extra = { ConnFlowActions(liveConn, state, actions) },
                 )
             }
         }
@@ -305,6 +309,40 @@ private fun ConnSheetActions(row: ConnRow, actions: UiActions) {
         onClick = { actions.openAppInfo(row.packageName) },
         modifier = Modifier.testTag("sheet:appinfo"),
     ) { Text("App info") }
+}
+
+/** The row's flags as (test tag, text, is-a-warning), in reading order. */
+internal fun connFlags(row: ConnRow): List<Triple<String, String, Boolean>> = buildList {
+    if (row.cleartext.isNotEmpty()) add(Triple("cleartext", "cleartext ${row.cleartext}", true))
+    if (row.tlsDeprecated) add(Triple("tls", row.tls, true))
+    if (row.encryptedDns.isNotEmpty()) add(Triple("encdns", row.encryptedDns, false))
+    if (row.owner.isNotEmpty()) add(Triple("owner", row.owner, false))
+}
+
+/**
+ * What the proxy can do to one flow because it owns both ends of it. Absent
+ * — not greyed — in API mode and for a closed row, where there is no live
+ * flow to act on.
+ */
+@Composable
+private fun ConnFlowActions(row: ConnRow, state: UiState, actions: UiActions) {
+    if (!state.caps.hasConnections || row.state == ConnState.CLOSED) return
+    val target = row.resolvedHost?.takeIf { it.isNotEmpty() } ?: row.remoteAddr
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+    ) {
+        OutlinedButton(
+            onClick = { actions.terminateConnection(row.key) },
+            modifier = Modifier.testTag("sheet:terminate"),
+        ) { Text("Reset connection") }
+        if (row.packageName.isNotEmpty()) {
+            OutlinedButton(
+                onClick = { actions.addFirewallRule(target, row.packageName) },
+                modifier = Modifier.testTag("sheet:block-host"),
+            ) { Text("Block $target for this app") }
+        }
+    }
 }
 
 @Composable
@@ -472,6 +510,24 @@ private fun FlatTable(
                             Text(row.network, style = MaterialTheme.typography.labelSmall)
                         }
                     }
+                    // Flags a security reader wants on the row itself rather than
+                    // one tap away — plain text, a retired TLS version, a resolver
+                    // hiding the lookups, who owns the far end. A line of their own:
+                    // squeezed into the first line they were cut to a few pixels.
+                    val flags = connFlags(row)
+                    if (flags.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            flags.forEach { (tag, text, warn) ->
+                                Text(
+                                    text,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (warn) DuckColors.Warn else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    modifier = Modifier.testTag("conn:$tag:${row.key}"),
+                                )
+                            }
+                        }
+                    }
                 }
             }
             HorizontalDivider()
@@ -631,6 +687,14 @@ private fun connDetailLines(row: ConnRow, state: UiState): List<Pair<String, Str
     lines += "Package" to row.packageName.ifEmpty { "-" }
     lines += "UID" to row.uid.toString()
     lines += "Blocked" to if (row.blocked) "yes" else "no"
+    if (row.blockReason.isNotEmpty()) lines += "Refused by" to row.blockReason
+    if (row.tls.isNotEmpty()) {
+        lines += "TLS" to row.tls + if (row.tlsDeprecated) " (deprecated)" else ""
+    }
+    if (row.cleartext.isNotEmpty()) lines += "Unencrypted" to row.cleartext
+    if (row.encryptedDns.isNotEmpty()) lines += "Encrypted DNS" to row.encryptedDns
+    // The column exists only with an AS table imported, as in the TUI.
+    if (state.asnSize > 0) lines += "Network owner" to row.owner.ifEmpty { "-" }
     return lines
 }
 

@@ -50,6 +50,13 @@ internal const val EMPTY_EVENTS = "No events yet"
 internal const val EMPTY_DOMAINS = "No names seen yet"
 internal const val EMPTY_DOMAINS_NO_CAPTURE = "Capture engine is off"
 
+/**
+ * A table the search or a filter has emptied. Domains and Events used to say
+ * "No names seen yet" / "nothing has changed yet" over a store full of rows
+ * the query merely hid — sending the reader to wait for data that was there.
+ */
+internal const val EMPTY_NO_MATCH = "Nothing matches"
+
 internal fun emptyTag(title: String): String = "empty:$title"
 
 /** Rate or cumulative columns, following the global rate/total toggle. */

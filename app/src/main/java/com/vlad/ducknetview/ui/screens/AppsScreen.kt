@@ -2,6 +2,7 @@
 
 package com.vlad.ducknetview.ui.screens
 
+import com.vlad.ducknetview.domain.firewall.AppPolicy
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -225,6 +226,7 @@ fun AppsScreen(
                                 KeyValueRow(label = k, value = v)
                             }
                             Row { AppSheetActions(live, actions) }
+                            AppPolicyControls(live, state, actions)
                         }
                     }
                 }
@@ -242,6 +244,7 @@ fun AppsScreen(
                 onCopy = { actions.copyText("app", appTabText(live, s.rateUnit)) },
                 onDismiss = { selected = null },
                 actions = { AppSheetActions(live, actions) },
+                extra = { AppPolicyControls(live, state, actions) },
             )
         }
     }
@@ -262,6 +265,84 @@ private fun AppSheetActions(app: AppRow, actions: UiActions) {
         modifier = Modifier.testTag("sheet:appinfo"),
     ) { Text("App info") }
 }
+
+/**
+ * The firewall's per-app half: when this app may use the network, how much
+ * it may use, and the hosts it alone is refused. Chips rather than text
+ * fields, because this renders inside a bottom sheet on a phone and a sheet's
+ * own window reports no keyboard inset — a field near its bottom would sit
+ * behind the keyboard.
+ */
+@Composable
+private fun AppPolicyControls(app: AppRow, state: UiState, actions: UiActions) {
+    val policy = state.appPolicies[app.uid] ?: AppPolicy(app.uid)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.fillMaxWidth().testTag("app:policy:${app.uid}"),
+    ) {
+        Text("Block this app…", style = MaterialTheme.typography.labelMedium)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
+            DuckFilterChip("on mobile", policy.blockMobile, {
+                actions.setAppPolicy(policy.copy(blockMobile = !policy.blockMobile))
+            }, Modifier.testTag("policy:mobile"))
+            DuckFilterChip("metered", policy.blockMetered, {
+                actions.setAppPolicy(policy.copy(blockMetered = !policy.blockMetered))
+            }, Modifier.testTag("policy:metered"))
+            DuckFilterChip("untrusted", policy.blockUntrusted, {
+                actions.setAppPolicy(policy.copy(blockUntrusted = !policy.blockUntrusted))
+            }, Modifier.testTag("policy:untrusted"))
+            DuckFilterChip("screen off", policy.blockScreenOff, {
+                actions.setAppPolicy(policy.copy(blockScreenOff = !policy.blockScreenOff))
+            }, Modifier.testTag("policy:screenoff"))
+        }
+        if (app.packageName.isNotEmpty()) {
+            val budget = state.appBudgets.firstOrNull { it.packageName == app.packageName }
+            Text("Allowance per cycle", style = MaterialTheme.typography.labelMedium)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                DuckFilterChip("none", budget == null, {
+                    actions.removeAppBudget(app.packageName)
+                }, Modifier.testTag("budget:none"))
+                BUDGET_STEPS.forEach { (label, bytes) ->
+                    DuckFilterChip(label, budget?.capBytes == bytes, {
+                        actions.setAppBudget(app.packageName, bytes, budget?.block ?: false)
+                    }, Modifier.testTag("budget:$label"))
+                }
+                if (budget != null) {
+                    DuckFilterChip("block when over", budget.block, {
+                        actions.setAppBudget(app.packageName, budget.capBytes, !budget.block)
+                    }, Modifier.testTag("budget:block"))
+                }
+            }
+            val rules = state.firewallRules.filter { it.packageName == app.packageName }
+            if (rules.isNotEmpty()) {
+                Text("Refused hosts for this app", style = MaterialTheme.typography.labelMedium)
+                rules.forEach { r ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(r.pattern, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = { actions.removeFirewallRule(r) },
+                            modifier = Modifier.testTag("app:rule:del:${r.pattern}"),
+                        ) { Text("Allow") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Allowance presets; a cap is a round number, and chips need no keyboard. */
+private val BUDGET_STEPS = listOf(
+    "100 MB" to 100_000_000L,
+    "500 MB" to 500_000_000L,
+    "1 GB" to 1_000_000_000L,
+    "5 GB" to 5_000_000_000L,
+)
 
 @Composable
 private fun AppRowItem(
@@ -329,7 +410,8 @@ private fun AppRowItem(
             )
             if (state.usageAccessGranted) {
                 Text(
-                    "today ${Units.bytes(app.todayRx + app.todayTx)}",
+                    "today ${Units.bytes(app.todayRx + app.todayTx)}" +
+                        if (app.todayBackground > 0) " · bg ${Units.bytes(app.todayBackground)}" else "",
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.testTag("app:today:${app.uid}"),
                 )
@@ -355,6 +437,22 @@ private fun appDetailLines(app: AppRow, state: UiState): List<Pair<String, Strin
     lines += "Session" to "↓ ${Units.bytes(app.sessionRx)}  ↑ ${Units.bytes(app.sessionTx)}"
     if (state.usageAccessGranted) {
         lines += "Today" to Units.bytes(app.todayRx + app.todayTx)
+        // -1 is "the platform gave no foreground/background split", which is
+        // not the same as nothing in the background — so it is not shown.
+        if (app.todayBackground >= 0) {
+            lines += "Today in background" to Units.bytes(app.todayBackground)
+        }
+    }
+    if (app.budgetBytes > 0) {
+        lines += "Allowance" to Units.bytes(app.budgetBytes) + " per cycle"
+    }
+    state.appPolicies[app.uid]?.let { p ->
+        lines += "Blocked when" to listOfNotNull(
+            "on mobile".takeIf { p.blockMobile },
+            "metered".takeIf { p.blockMetered },
+            "untrusted".takeIf { p.blockUntrusted },
+            "screen off".takeIf { p.blockScreenOff },
+        ).joinToString(", ")
     }
     lines += "Blocked" to if (app.blocked) "yes" else "no"
     // Shown whenever there is a number, not only while the block is on: an

@@ -27,6 +27,13 @@ interface EchoSocket {
      */
     fun receive(into: ByteArray): Int
 
+    /**
+     * As [receive], also naming who sent the datagram — needed when one
+     * request can draw answers from many hosts, as an echo to a multicast
+     * group does. The default knows no sender.
+     */
+    fun receiveFrom(into: ByteArray): Pair<Int, InetAddress?> = receive(into) to null
+
     fun close()
 
     companion object {
@@ -125,6 +132,16 @@ object PingSockets {
             }
         } catch (e: Exception) {
             -1
+        }
+
+        override fun receiveFrom(into: ByteArray): Pair<Int, InetAddress?> = try {
+            val from = java.net.InetSocketAddress(0)
+            val n = Os.recvfrom(fd, into, 0, into.size, 0, from)
+            n to from.address
+        } catch (e: ErrnoException) {
+            (if (e.errno == OsConstants.EAGAIN || e.errno == OsConstants.EINTR) EchoSocket.TIMED_OUT else -1) to null
+        } catch (e: Exception) {
+            -1 to null
         }
 
         override fun close() {

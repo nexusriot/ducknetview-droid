@@ -86,7 +86,11 @@ class BlockedEvents(private val refireMillis: Long = REFIRE_MILLIS) {
 
     private fun detail(p: Pending): String {
         val what = if (p.count == 1L) "1 connection refused" else "${p.count} connections refused"
-        return "$what · last ${p.last.proto} to ${p.last.remote}"
+        // The reason is what tells a refusal by a policy ("while the screen is
+        // off") from one by a rule or the app switch — without it the log
+        // says only that something refused.
+        val why = p.last.reason.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""
+        return "$what · last ${p.last.proto} to ${p.last.remote}$why"
     }
 
     private fun pruneFired(now: Long) {

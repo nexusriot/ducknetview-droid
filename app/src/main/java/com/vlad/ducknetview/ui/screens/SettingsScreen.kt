@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -88,6 +89,115 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.testTag("settings:vpn-note"),
+            )
+            SwitchRow(
+                label = "Start capture after a reboot",
+                checked = s.startOnBoot,
+                tag = "settings:startOnBoot",
+            ) { v -> actions.updateSettings { it.copy(startOnBoot = v) } }
+            if (s.startOnBoot && !state.vpnConsentGranted) {
+                Text(
+                    "Capture has never been allowed on this device, so a reboot cannot " +
+                        "start it: the consent dialog needs the app open. Turn capture " +
+                        "on once from here.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("settings:boot-needs-consent"),
+                )
+            }
+            KeyValueRow(
+                label = "Always-on VPN",
+                value = when {
+                    state.lockdown -> "on, blocking without VPN"
+                    state.alwaysOn -> "on"
+                    else -> "off"
+                },
+                modifier = Modifier.testTag("settings:always-on"),
+            )
+            Text(
+                "Android's own Always-on VPN (Settings → Network → VPN → ducknetview) " +
+                    "keeps capture running across reboots and restarts it if it dies. " +
+                    "With \"Block connections without VPN\" on as well, stopping capture " +
+                    "here cuts the whole device off, not just the monitoring.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("TUN MTU", style = MaterialTheme.typography.bodyMedium)
+                AppSettings.MTU_STEPS.forEach { mtu ->
+                    DuckFilterChip(
+                        mtu.toString(),
+                        s.tunMtu == mtu,
+                        { actions.updateSettings { it.copy(tunMtu = mtu) } },
+                        Modifier.testTag("chip:mtu-$mtu"),
+                    )
+                }
+            }
+            Text(
+                "Larger packets mean fewer of them to relay, which is the biggest lever " +
+                    "on capture's CPU cost — but apps then send segments that size into " +
+                    "the tunnel. Takes effect the next time capture starts.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SectionCard(title = "Firewall", modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Refuse new connections to a domain, an address or a range, for every " +
+                    "app. Per-app rules, network policies and allowances live on each " +
+                    "app's sheet. A name learnt before the connection opens is refused " +
+                    "outright; one only visible in the TLS or QUIC handshake is cut " +
+                    "the moment it appears. Needs capture.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            state.firewallRules.forEach { rule ->
+                EditableEntryRow(
+                    text = if (rule.global) rule.pattern else "${rule.pattern}  (${rule.packageName})",
+                    tag = "rule:${rule.encode()}",
+                    deleteTag = "rule:del:${rule.encode()}",
+                    onDelete = { actions.removeFirewallRule(rule) },
+                )
+            }
+            AddEntryRow(
+                label = "Block domain, address or range",
+                fieldTag = "settings:rule-add",
+                buttonTag = "settings:rule-add-btn",
+                onAdd = { actions.addFirewallRule(it, "") },
+            )
+            KeyValueRow(
+                label = "Block list",
+                value = if (state.blocklistSize > 0) "${state.blocklistSize} names" else "none imported",
+                modifier = Modifier.testTag("settings:blocklist-size"),
+            )
+            SwitchRow(
+                label = "Enforce the block list",
+                checked = s.blocklistEnabled,
+                tag = "settings:blocklistEnabled",
+            ) { v -> actions.updateSettings { it.copy(blocklistEnabled = v) } }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = actions::importBlocklist,
+                    modifier = Modifier.testTag("settings:blocklist-import"),
+                ) { Text("Import hosts file") }
+                if (state.blocklistSize > 0) {
+                    OutlinedButton(
+                        onClick = actions::clearBlocklist,
+                        modifier = Modifier.testTag("settings:blocklist-clear"),
+                    ) { Text("Remove") }
+                }
+            }
+            Text(
+                "A hosts-format list (0.0.0.0 tracker.example) from wherever you trust. " +
+                    "Imported, it labels matching names on the Domains screen even when " +
+                    "it is not enforced.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
@@ -386,17 +496,125 @@ fun SettingsScreen(
             }
         }
 
+        SectionCard(title = "Saved views", modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "A view keeps the current tab, search, quick filters, Connections sort " +
+                    "and the group / closed / totals / reverse-DNS toggles under a name. " +
+                    "The first four also appear as launcher shortcuts.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            state.savedViews.forEach { v ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "${v.name}  ·  ${v.tab}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedButton(
+                        onClick = { actions.applyView(v.name) },
+                        modifier = Modifier.testTag("view:apply:${v.name}"),
+                    ) { Text("Open") }
+                    TextButton(
+                        onClick = { actions.deleteView(v.name) },
+                        modifier = Modifier.testTag("view:del:${v.name}"),
+                    ) { Text("Delete") }
+                }
+            }
+            AddEntryRow(
+                label = "Save current screen as",
+                fieldTag = "settings:view-name",
+                buttonTag = "settings:view-save",
+                onAdd = { actions.saveView(it) },
+            )
+        }
+
+        SectionCard(title = "Background data", modifier = Modifier.fillMaxWidth()) {
+            NumberSetting(
+                label = "Warn above (MB per app per day)",
+                help = "An app moving more than this while not in the foreground. Needs " +
+                    "Usage Access; works without capture. 0 disables it.",
+                initial = (s.alertBackgroundBytes / MB).toString(),
+                tag = "settings:alertBackground",
+                max = MAX_CAP_MB,
+            ) { v -> actions.updateSettings { it.copy(alertBackgroundBytes = v * MB) } }
+        }
+
+        SectionCard(title = "Network owners", modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Import an ip2asn table (iptoasn.com, plain or .gz) and Connections " +
+                    "shows the network behind each public address — the answer reverse " +
+                    "DNS is silent on for most cloud hosts. Nothing is bundled and no " +
+                    "lookup leaves the device.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            KeyValueRow(
+                label = "AS table",
+                value = if (state.asnSize > 0) "${state.asnSize} ranges" else "none imported",
+                modifier = Modifier.testTag("settings:asn-size"),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = actions::importAsn,
+                    modifier = Modifier.testTag("settings:asn-import"),
+                ) { Text("Import ip2asn") }
+                if (state.asnSize > 0) {
+                    OutlinedButton(
+                        onClick = actions::clearAsn,
+                        modifier = Modifier.testTag("settings:asn-clear"),
+                    ) { Text("Remove") }
+                }
+            }
+        }
+
+        SectionCard(title = "Compare", modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Open a snapshot exported earlier and see what changed since: listeners " +
+                    "gained, lost or moved, new apps, first-contact hosts, links.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = actions::compareSnapshot,
+                modifier = Modifier.testTag("settings:compare"),
+            ) { Text("Compare a snapshot with now") }
+        }
+
+        SectionCard(title = "Automation", modifier = Modifier.fillMaxWidth()) {
+            SwitchRow(
+                label = "Accept automation intents",
+                checked = s.automationEnabled,
+                tag = "settings:automation",
+            ) { v -> actions.updateSettings { it.copy(automationEnabled = v) } }
+            Text(
+                "Lets Tasker, Automate or adb send com.vlad.ducknetview.action." +
+                    "START_CAPTURE, STOP_CAPTURE, SCAN_SERVICES, SCAN_HOSTS or " +
+                    "EXPORT_SNAPSHOT. Any app on the device can send these, so they are " +
+                    "refused until this is on; every command is logged either way.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         SectionCard(title = "Privacy", modifier = Modifier.fillMaxWidth()) {
             Text(
-                "Everything ducknetview collects stays on this device. The only outbound " +
-                    "calls it ever makes are: the optional external-IP lookup (ipify), the " +
-                    "latency targets you configure, the optional alert webhook, and " +
-                    "reverse-DNS lookups when you turn them on. Packet contents are never " +
-                    "captured, inspected or stored — only addresses, ports and byte counts.",
+                "Everything ducknetview collects stays on this device. The traffic it " +
+                    "generates itself is: the external-IP lookup (ipify), the router latency probe " +
+                    "and any latency targets you configure, the optional alert webhook, and " +
+                    "the Hosts sweep (ICMP and mDNS on this link, only when you press Scan). " +
+                    "Reverse DNS sends no queries: names come from DNS answers, TLS and QUIC " +
+                    "handshakes already passing through capture. Packet contents are never " +
+                    "stored — only addresses, ports, byte counts and those names.",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.testTag("settings:privacy"),
             )
-            KeyValueRow(label = "External IP lookup", value = if (s.externalIpEnabled) "on" else "off")
+            SwitchRow(
+                label = "External IP lookup (ipify)",
+                checked = s.externalIpEnabled,
+                tag = "settings:external-ip",
+                onChange = { on -> actions.updateSettings { it.copy(externalIpEnabled = on) } },
+            )
             KeyValueRow(label = "Reverse DNS", value = if (s.revDns) "on" else "off")
         }
     }

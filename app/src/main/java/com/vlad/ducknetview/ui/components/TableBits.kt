@@ -1,5 +1,7 @@
 package com.vlad.ducknetview.ui.components
 
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -275,17 +277,21 @@ fun DetailSheet(
     onCopy: () -> Unit,
     onDismiss: () -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
+    extra: @Composable ColumnScope.() -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         modifier = Modifier.testTag("detail:$title"),
     ) {
         Column(
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(text = title, style = MaterialTheme.typography.titleMedium)
             lines.forEach { (label, value) -> KeyValueRow(label, value) }
+            extra()
             Row(
                 modifier = Modifier.padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

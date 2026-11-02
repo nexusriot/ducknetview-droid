@@ -25,7 +25,8 @@ onward through a `protect()`ed socket, which makes it the accountant for every
 byte: exact per-connection counters, a live connection table, closed-flow
 history with true lifetime totals, and per-app attribution via
 `ConnectivityManager.getConnectionOwnerUid()`. Refusing to open the upstream
-socket is the per-app firewall. No root; one consent dialog.
+socket is the firewall (per app, per host, per network policy); a name seen
+only in the handshake cuts the flow instead (§8c). No root; one consent dialog.
 
 **Engine A — public APIs (always on).** `TrafficStats`,
 `NetworkStatsManager`, `ConnectivityManager`/`LinkProperties`, `WifiManager`.
@@ -42,13 +43,13 @@ active engine can actually answer, and the UI keys off it.
 |---|---|---|
 | Ports tab (enumerate listeners) | forbidden for other apps | **self port-scan** of loopback + each local address, with the TUI's baseline semantics intact |
 | Processes tab | other processes are hidden | **per-UID Apps screen**; CPU%/memory% omitted, not faked |
-| Kill process | own process only | per-app **VPN firewall block**, exclude-from-VPN, App-Info deep link |
-| ARP/neighbour table | unavailable on Android 10+ | **Hosts screen**: an opt-in ICMP sweep of the link's own prefix plus mDNS for names. The Routes screen still states the platform limit and points at it |
+| Kill process | own process only | per-app **firewall block** and network policies, **per-flow reset** (RST to the app, upstream closed), exclude-from-VPN, App-Info deep link |
+| ARP/neighbour table | unavailable on Android 10+ | **Hosts screen**: an opt-in ICMP sweep of the link's own prefix plus mDNS for names, plus one echo to `ff02::1` for IPv6. The Routes screen still states the platform limit and points at it |
 | Retransmit counts | no unprivileged source | column hidden; approximation deliberately parked |
 | ICMP (ping) | no raw sockets | **echo relayed through a Linux ping socket**; the rest of ICMP is not reachable |
 | Resolver activity | other apps' DNS is invisible | **names read off the TUN**: DNS answers, TLS SNI where the resolver is encrypted, and the ClientHello inside a QUIC Initial where the handshake is not TLS at all |
 | `--on-alert` shell hook | no shell | notification + optional webhook POST + broadcast Intent |
-| `--metrics` textfile | no cron | embedded HTTP endpoint, 49 gauge families |
+| `--metrics` textfile | no cron | embedded HTTP endpoint, 51 gauge families |
 | `--from snapshot` | — | SAF picker → frozen UI, reads the TUI's own JSON |
 
 UDP is skipped by the self-scan: it is not reliably detectable by connect-probing.
@@ -59,7 +60,10 @@ UDP is skipped by the self-scan: it is not reliably detectable by connect-probin
 engine, alert rules, baseline diffing, search, sort, rate maths and the CSV /
 JSON / Prometheus renderers are all plain JVM tests. `engine/` collects,
 `data/` persists, `ui/` renders as pure functions of `UiState` + `UiActions`,
-and one `MainViewModel` is the only thing that knows about both.
+and `DuckApp.Deps` wires the engine to settings and storage for the life of the
+process (so capture started from the tile, at boot or by automation is
+configured with no screen open); `MainViewModel` adapts both to `UiState` /
+`UiActions` for the screens.
 
 One immutable `NetSnapshot` per poll tick feeds every screen — the direct
 analogue of the TUI's single-enumeration design, and the reason the screens
@@ -154,8 +158,8 @@ ranges — and is dropped the moment the hello completes, a limit is passed, or
 the flow sends anything that is not an Initial. Received data is tracked as
 merged ranges rather than a high-water mark, because a client may send the
 tail of its hello before the head and a mark forgets the tail was ever there.
-Both of those bounds and the out-of-order case are pinned by tests that
-failed against the first implementation. Re-measured on the device: twenty
+The Initial-count and 16 KiB bounds and the out-of-order case are pinned by
+tests that failed against the first implementation; the range cap is not yet. Re-measured on the device: twenty
 names, `blog.cloudflare.com` and `www.google.com` among them, each attributed
 to Chrome and labelled QUIC.
 
@@ -164,7 +168,7 @@ it and retired it, and that was the whole story: no event, no counter, no
 gauge. Because a blocked app has no live connections *by construction*, the
 Apps screen showed it exactly as it shows an app that is not running — so
 there was no way to tell a working block from a broken one, which is the same
-honesty failure as the `paused` flag in §8a. Refusals are now observed on the
+honesty failure as the `paused` flag in §8b. Refusals are now observed on the
 packet path, buffered for the poll tick the way DNS answers are (a blocked app
 retries hard enough that anything more than an append would be felt there),
 counted per app onto `AppRow.blockedAttempts`, and summarised in the log.
@@ -177,7 +181,7 @@ is watching. The level is INFO, deliberately: they asked for this, so a
 refusal is the feature working, and WARN would put a notification and a
 webhook POST behind every retry of an app they have already dealt with.
 
-**Three event kinds existed that nothing could ever emit.** `CAPTIVE_PORTAL`,
+**Four event kinds existed that nothing could ever emit.** `CAPTIVE_PORTAL`,
 `ENGINE_STARTED`, `ENGINE_STOPPED` and `ENGINE_REVOKED` were declared,
 filtered on, and present in the CSV vocabulary, and no line anywhere
 constructed one. `ENGINE_REVOKED` is the worst of them: Android permits a
@@ -202,8 +206,8 @@ compare against when the real one arrived.
 **The neighbour sweep is the app's only active source, and is treated as
 such.** Every other screen watches traffic that was happening anyway; this one
 sends packets to hosts the user did not name. It therefore has a button and no
-automatic refresh, it sweeps the device's own on-link IPv4 prefix and nothing
-else — no typed range, no routed network, nothing wider than a /22 — and it
+automatic refresh, it sweeps the device's own on-link IPv4 prefix (plus one
+all-nodes echo on IPv6, below) and nothing else — no typed range, no routed network, nothing wider than a /22 — and it
 skips the broadcast address, which is the one probe on the list that would
 reach hosts nobody asked about. A prefix too wide returns **no** list rather
 than a truncated one, because a partial sweep presented as a finished one is
@@ -211,9 +215,9 @@ the silent shortfall this project treats as a defect.
 
 Names come from `NsdManager` rather than from a socket of ours, which buys
 three things at once: no multicast permission, no multicast lock, and — while
-capture is on — no traversal of our own TUN. IPv6 is refused outright and the
-screen says why: an on-link prefix there is a /64, so there is no list to walk
-at all. The screen also states, in place of an empty table, that this is a
+capture is on — no traversal of our own TUN. IPv6 is not swept — an on-link
+prefix there is a /64, so there is no list to walk — but one echo to the
+all-nodes group `ff02::1` lists every IPv6 host that answers (§8c). The screen also states, in place of an empty table, that this is a
 list of what *answered* — a host filtering ICMP and publishing no mDNS is on
 the network and not on the screen, and a guest network is built so that
 nothing answers.
@@ -244,7 +248,7 @@ about one that did, so the assembler computes `untrustedDefault` and both read
 that. The per-network key is the SSID and not the interface — `wlan0` is
 `wlan0` on every Wi-Fi network there has ever been, so keying trust on it
 would mark every network at once — and not the platform netId either, for the
-reason §8a records.
+reason recorded under *Link identity is the interface* below.
 
 **SNI is read; nothing is decrypted.** The connection table labelled rows from
 DNS answers crossing the TUN, which is dead code on any device with Private DNS
@@ -261,7 +265,9 @@ This sits next to "payload capture is a non-goal", so it is worth being exact
 about where the line now is. Two fields are read and no others: the answers in
 a DNS response and the server name in a ClientHello. Both are names, both are
 sent unencrypted, no key is touched and no certificate is substituted, and the
-bytes are relayed unchanged either way. Encrypted Client Hello will take this
+bytes are relayed unchanged either way. (Since widened to four reads under the
+same rule — the name in a QUIC Initial, below, and the ServerHello's
+negotiated version and cipher, §8c.) Encrypted Client Hello will take this
 source away in time; when it does the field is simply absent and rows fall back
 to addresses, which is the same degradation Private DNS already produces for
 the DNS source.
@@ -270,7 +276,8 @@ the DNS source.
 derives everything from diffing two snapshots and owns `new_public_host`. Names
 are not on a snapshot at all — they arrive from the capture engine's packet
 path — so `DomainEvents` produces `new_domain` instead. Two producers reading
-one source is what put every new host in the log twice once before (§5); these
+one source is what put every new host in the log twice once before (see *One producer for
+`new_public_host`* below); these
 two read different sources, and an address and a name are different subjects
 even when they describe the same server. The observations are buffered and
 written by the poll tick rather than where they are seen: launching a coroutine
@@ -281,6 +288,17 @@ path should not carry.
 descriptor handed to the local kernel, which does not lose segments. Flow
 control *is* implemented: the peer's advertised window must be respected or a
 fast download overruns its receive buffer.
+
+**Link identity is the interface, and a link is down only after two missed
+polls.** Android re-issues a network's netId whenever it re-registers — toggling
+this app's own capture stepped `wlan0` from 785 to 786 while the link carried
+traffic throughout — so keying on `NetworkRow.id` turned the capture switch into
+a `WARN network_down wlan0 vanished` plus an alert notification. `EventEngine`
+keys links on `transport/ifaceName`, and because `onLost` and `onAvailable` can
+straddle a tick, a link must be missing for `DOWN_CONFIRM_POLLS` (2) consecutive
+polls before it is reported down. The set of known links survives `reset()`, or
+a capture restart would re-announce every network. This app's own `tun0` is
+excluded by `OwnTunnel` (§7b).
 
 **One producer for `new_public_host`.** There were two: `EventEngine.connEvents`
 deduping in memory, and `EngineController.firstContactEvents` deduping through
@@ -371,9 +389,10 @@ described the Wi-Fi bottleneck, not the proxy. A benchmark whose bottleneck sits
 outside the thing being measured reports the bottleneck — the same reason this
 harness insists on a LAN source instead of a CDN, applied one layer further in.
 
-The largest untaken lever is raising the TUN MTU (~10× fewer packets, writes and
-ACKs). It changes what every app puts on the wire through the TUN and needs a
-device to validate.
+The largest lever, the TUN MTU (~10× fewer packets, writes and ACKs), is now a
+user setting — 1500 by default, 4000 / 9000 / 16000 on request — validated
+byte-exact at 9000 (§8d) but not re-benchmarked, which is why it is not the
+default: it changes what every app puts on the wire through the TUN.
 
 ## 7. Environment constraints discovered in the field
 
@@ -398,7 +417,7 @@ device to validate.
   screenshot, not a test.
 - **A screen not on the nav bar is a screen no suite visits.** The device suite
   drove all seven navigation destinations and never once opened **Usage**, which
-  is reached from the top bar instead. The crash described in §8a therefore
+  is reached from the top bar instead. The crash described in §8b therefore
   survived every green run until the icon was tapped by hand.
 - **`getConnectionOwnerUid` does not answer for a socket that has closed.** It
   is a query about a *live* connection, so a short HTTP request can finish
@@ -418,7 +437,7 @@ device to validate.
   now `exec`ed so `$!` is the process that must die, the port is checked before
   binding, and the blob is fetched once before three rounds are spent on it.
 
-## 7b. Third hardware round: what the platform redacts, and what was never widened
+### 7b. Third hardware round: what the platform redacts, and what was never widened
 
 A third pass over the real device, 2026-10-23, against the 44-test instrumented
 suite passing. Seven defects, and the suite caught none of them. This time the
@@ -442,7 +461,7 @@ services on and the Activity in front, side by side in one call:
 So the first source always answered, the second was never consulted, and the
 Links screen rendered `SSID —`. The cost was not the blank field. **Network
 trust is keyed on the SSID**, deliberately (`wlan0` is `wlan0` everywhere, and
-netId flaps — round six), so `NetworkTrust.keyOf` returned null for every Wi-Fi
+netId flaps — see *Link identity is the interface* in §5), so `NetworkTrust.keyOf` returned null for every Wi-Fi
 link: the Links screen drew no trust buttons at all, nothing the user marked
 could be remembered, and the whole round-seven trust feature was inert on every
 device that runs the location check. The fix merges the sources — the first
@@ -476,7 +495,8 @@ None of them is a compile error.
   `fullSnapshotRoundTrips` compares two whole objects and still missed it,
   because **the fixture was never widened either** — both sides held the
   defaults and the equality passed. The guard is now reflection over the
-  constructor, which a new field cannot be left out of. `LatencySample.method`
+  class's declared fields (`SnapshotJsonTest.everyDeclaredFieldIsEncoded`),
+  which a new field cannot be left out of. `LatencySample.method`
   was missing from the file too.
 - **The Connections Share button exported a table nobody was looking at.** That
   screen renders one of three tables and `exportCurrentTable` called
@@ -531,15 +551,15 @@ same identity the feature is built on.
 **What this round says about the guards.** Five of the seven faults are one
 sentence: *a set grew and a hand-written reader of it did not.* `NameSource`,
 `NetSnapshot`'s fields, the Connections screen's modes, the latency methods, the
-scan's port window. `EventKindsProducedTest` and `UiActionsWiredTest` already
-encode that rule for two vocabularies; this round added it for four more, and in
+scan's port window. `EventKindsProducedTest`, `UiActionsWiredTest` and `BridgeFieldsWrittenTest`
+already encoded that rule for three vocabularies; this round added it for four more, and in
 each case the guard was verified red against the unfixed tree before being kept.
 The lesson generalises past any one of them: **an `if/else` over a set that can
 grow is a latent fault, and the compiler will never ask about it.** An
 exhaustive `when`, a property on the enum, or reflection over the declaration
 will.
 
-## 8. Recurring defect class, and the guard
+## 8. Recurring defect class, and the guards
 
 Three times, a feature was fully implemented, documented, and reachable from
 nothing: `openSnapshot` had no control, `requestWifiPermission` had no caller,
@@ -549,7 +569,24 @@ and HIGHLIGHT search mode computed match ranges that no screen rendered.
 member has a caller in `ui/` or `MainActivity`. Reflection proves a method
 exists; only a source scan proves something invokes it.
 
-### 8b. A green suite that tested nothing
+It has since been joined by ten more guards in the same package, each verified
+red against the tree it was written for:
+
+| Guard (`app/src/test/.../arch/`) | Forbids |
+|---|---|
+| `UiActionsWiredTest` | a `UiActions` member with no caller in `ui/` or `MainActivity` |
+| `BridgeFieldsWrittenTest` | a mutable `VpnBridge` field that nothing assigns |
+| `EventKindsProducedTest` | an `EventKind` constructed nowhere in `main/` outside `ui/` |
+| `NameSourcesReportedTest` | a reader that singles out one `NameSource` instead of asking the enum |
+| `ExportsTheVisibleTableTest` | a Share export that ignores a mode the Connections screen branches on, or an unreachable `Csv` table |
+| `ScanWindowsAgreeTest` | the Services button and `ServiceScanWorker` scanning different port windows |
+| `TablePipelineTest` | a `UiState` table assigned straight from the snapshot, bypassing filter, search and sort |
+| `SortChipsSortTest` | a rendered sort chip whose ascending and descending orders are the same |
+| `FlowClosePathsTest` | a flow-retire path that drops the app label or the block flag |
+| `DomainEventsLabelledTest` | a `new_domain` event built from rows with no app label |
+| `FrozenSnapshotTest` | live-device data (events, names, usage) reaching `UiState` while a snapshot is open |
+
+### 8a. A green suite that tested nothing
 
 The device suite ran 29 tests against a release of this app in which four
 features were new, and passed — because not one of those tests touched any of
@@ -568,17 +605,6 @@ assumption, and `am instrument` reported `OK (7 tests)`. A suite that skips
 is reported exactly like a suite that passes. It now opens with a case whose
 only job is to fail when the setup did not work.
 
-A fifth was found by writing the guard for it rather than by a device run.
-`arch/EventKindsProducedTest` asserts every `EventKind` constant is
-constructed somewhere in `main/` outside the UI that renders it, and it found
-**four** orphans at once: `CAPTIVE_PORTAL` and the three engine-lifecycle
-kinds. They are the same class as `openSnapshot` and `AppRow.todayRx` applied
-to the third vocabulary the app publishes to the user, and the compiler cannot
-see it — an enum constant nothing constructs is legal, and an exhaustive
-`when` over it in the renderer makes it look thoroughly wired. The rule the
-guard encodes: declaring a kind is a promise the app can report it, and a kind
-with no source on Android belongs left out, the way retransmit counts are.
-
 A fourth turned up on the device, and the guard does not cover it because it is
 not a `UiActions` member: **`AppRow.todayRx` / `todayTx` were read in six places
 — the Apps row, its detail sheet, the `today` sort column, the CSV and the JSON
@@ -591,7 +617,18 @@ The lesson generalises past `UiActions`: a field the UI renders needs a producer
 as much as a button needs a handler, and "compiles and has a default" hides the
 absence of one.
 
-### 8a. The second class: two correct layers, a wrong seam
+A fifth was found by writing the guard for it rather than by a device run.
+`arch/EventKindsProducedTest` asserts every `EventKind` constant is
+constructed somewhere in `main/` outside the UI that renders it, and it found
+**four** orphans at once: `CAPTIVE_PORTAL` and the three engine-lifecycle
+kinds. They are the same class as `openSnapshot` and `AppRow.todayRx` applied
+to the third vocabulary the app publishes to the user, and the compiler cannot
+see it — an enum constant nothing constructs is legal, and an exhaustive
+`when` over it in the renderer makes it look thoroughly wired. The rule the
+guard encodes: declaring a kind is a promise the app can report it, and a kind
+with no source on Android belongs left out, the way retransmit counts are.
+
+### 8b. The second class: two correct layers, a wrong seam
 
 A device run found three defects that every existing test called fine, because
 each lived *between* two components that were individually right and
@@ -643,10 +680,119 @@ while `n`/`N` could only walk the visible one — "3 matches" over a table showi
 none. The counter and the highlighted set are now read off one `SearchResult`,
 so the two cannot disagree again.
 
+## 8c. Ninth round: the roadmap, and what it changed underneath
+
+Twenty features from `docs/ROADMAP.md` landed together. Most are additive and
+documented in the README; these are the decisions that shape the code.
+
+**Settings reach the engine for the life of the process, not of the screen.**
+`EngineController.applySettings` used to be called only by the ViewModel's
+collector, so capture started from the Quick Settings tile with no Activity
+ran with an *empty firewall* — a blocked app was not blocked. Start-on-boot,
+the system's always-on VPN and automation made that the common case rather
+than a corner, so `DuckApp.Deps.engineSettings` now owns the collection and
+`DuckVpnService.startEngine` starts the poll loop itself. The ViewModel keeps
+only the remembered tab.
+
+**The firewall is compiled, never interpreted.** `domain/firewall/Firewall`
+turns rules, the block list, per-app network policies, blocked uids and
+over-budget uids into hash sets once per change; the packet path asks
+`VpnBridge.verdict(uid, ip)` on a flow's first packet and pays a few probes.
+Rules name packages and compile to uids, and a rule for a package that is not
+installed compiles to *nothing* — the dangerous direction to fail in would be
+a global rule. Two moments decide: at SYN with whatever name the device already
+holds for the address (`VpnBridge.names`, a concurrent map separate from the
+display cache, whose LRU order mutates on read), and at the first handshake
+record, where an SNI or QUIC Initial naming a blocked host *cuts* a flow that
+could not have been refused (`cutIfNamedBlocked`). Every refusal carries its
+reason onto `Flow.blockReason`, the closed row and the log line.
+
+**What a flow is flagged with comes from ports, addresses and cleartext
+handshakes only.** Cleartext is a port table; encrypted DNS is port 853 or 443
+to a fixed resolver list; deprecated TLS is the ServerHello's negotiated
+version, read from the first upstream chunk of a flow whose client opened with
+a TLS record (`TcpConnection.onServerHello`). The ServerHello read joins the
+three name reads in the Privacy section: it is sent before any key exchange.
+Closed rows are annotated as well as live ones — a plain-HTTP request is
+usually over before the next poll sees it live.
+
+**Recovery is a state machine beside the cooldown, not a use of it.**
+`AlertRules.breaches` holds every subject a sustained rule fired on, refreshed
+whenever it is over *whether or not the cooldown let it fire*; one minute
+under emits `*_cleared`. A rule switched off drops its breaches silently —
+"cleared" would claim a recovery when the app simply stopped looking.
+
+**The 24-hour chart is the only chart on disk.** `MinuteAccumulator` emits a
+minute only when the next one starts, integrates bytes over a capped gap (a
+process asleep for an hour does not charge that hour to the minute it woke
+in), and `series()` leaves unwatched minutes as zeros rather than closing the
+gap. `MIGRATION_3_4` adds `minute_history` by hand; `MinuteMigrationTest`
+validates it against the exported v4 schema.
+
+**IPv6 hosts are asked, not swept.** One echo to `ff02::1%iface` through the
+same unprivileged ping socket, reading every reply's source with `recvfrom`.
+Whether the kernel delivers more than one reply to a ping socket was unknown
+when this was written; on the M10 it does — one echo drew ten IPv6 hosts.
+
+**Automation is an exported receiver that refuses by default.** Any app can
+send a broadcast, so the switch is off until the user turns it on, and every
+command — obeyed or refused — is an `automation` event. Starting capture from
+it still requires prior consent, and Android's background FGS limits may
+refuse it; that refusal is logged rather than hidden.
+
+**A layout lesson the unit suite caught.** The row flags first went on the
+row's first line, after a `weight(1f)` label: Compose gave the label the
+remaining width and the flags *ten pixels*. They now get a line of their own,
+drawn only when there is something to flag. A test asserting `isDisplayed`
+found it; one asserting `exists` would have passed.
+
+**`BridgeFieldsWrittenTest` was widened, not weakened.** It excluded the whole
+of `DuckVpnService.kt` as a writer because the bridge lives there; but the
+service class in that file is the engine's legitimate writer (`terminator`,
+`alwaysOn`, `lockdown`). The scan now excludes only the `object VpnBridge`
+body.
+
+### 8d. The device round for §8c
+
+All 52 instrumented tests passed on the M10 — and, as in every round before,
+hand-driving found what they did not:
+
+- **A refused connection hung instead of failing.** `TcpConnection.reject()`
+  ran before `onSyn()` had recorded the SYN's sequence, so its RST
+  acknowledged 0; the app's kernel discarded it as unacceptable and kept
+  retransmitting the SYN until connect timed out. Every firewall refusal —
+  including the original app block — cost the app its whole connect timeout,
+  and a blocked app's retries were what filled the "354 connections refused"
+  counts. `reject(syn)` now acknowledges `seq + 1`; `TcpRejectTest` pins it,
+  and a refused `nc` on the device now fails in 0.04 s rather than 5.
+- **The Hosts sweep swept this app's own tunnel.** With capture on, the
+  default network is the TUN, so "the default link" was `tun0`: the banner
+  read `10.215.173.1/30 + ff02::1 on tun0`. Pre-existing for IPv4; the IPv6
+  probe made it visible. `LinkChoice.sweepLink` uses the link underneath.
+- **Start-on-boot ran and was refused.** The receiver fired and requested
+  capture; the OEM's `awbms` dropped the service start, silently. The code
+  path is right and the platform is not the app's to fix, so the receiver now
+  checks whether capture actually came up and logs `boot_start` either way.
+- **Domains and Events blamed the wrong thing when a search emptied them**
+  ("No names seen yet" over a store of 12 names); both now say the search or
+  filter hides the rows, as the other screens already did.
+- **A refusal's log line did not say which rule refused it**, so a policy
+  block ("while the screen is off") read the same as an app block.
+
+What worked first time on hardware: domain and address rules, the screen-off
+policy (refused with the screen off, allowed on wake), per-flow reset, the
+per-app host block, cleartext flagging from another uid, block-list and AS
+imports through the system picker, owner labels, saved views and their
+launcher shortcuts, Compare, automation (refused while off, obeyed and logged
+when on), the widget's live rates and capture toggle, the 24-hour chart
+surviving a reinstall, and a 20 MB transfer byte-exact at both MTU 1500 and
+9000.
+
 ## 9. Deliberate non-goals
 
 Payload capture / PCAP export (this is a monitor, not a sniffer), root mode,
-TLS interception, traffic shaping beyond per-app block, and any companion
+TLS interception, traffic shaping (the firewall allows or refuses, it never
+throttles), and any companion
 daemon.
 
 "TLS interception" means exactly that: decrypting, substituting a certificate,
@@ -654,5 +800,7 @@ or touching a key. Reading the cleartext `server_name` a client sends before
 any key exchange is not that, and §5 records why it is in and where its line
 sits. The same holds for the name in a QUIC Initial: its protection is derived
 entirely from a salt printed in RFC 9001 and a connection id sent in the
-clear, so removing it needs no secret and gives nothing a key would. In-app traceroute is also out, for the reason recorded there — the ICMP
+clear, so removing it needs no secret and gives nothing a key would.
+
+In-app traceroute is also out, for the reason §5 records — the ICMP
 errors it needs cannot be read through any public API.

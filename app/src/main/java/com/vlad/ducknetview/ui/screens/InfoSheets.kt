@@ -239,8 +239,9 @@ private fun overviewInfo(capturing: Boolean, caps: Capabilities): List<Pair<Stri
             "figure is the time to complete a TCP handshake, which also pays for the " +
             "peer's accept path. Each reading says which method produced it.",
         "External IP" to
-            "Optional and the only lookup that leaves the device: one HTTPS request to " +
-            "ipify. Turn it off in Settings and nothing goes out.",
+            "One HTTPS request to ipify — the only service the app contacts that you " +
+            "did not configure yourself. Turn it off in Settings → Privacy and nothing " +
+            "goes out.",
     )
 
 private fun interfacesInfo(capturing: Boolean): List<Pair<String, String>> = listOf(
@@ -444,9 +445,10 @@ private fun neighboursInfo(capturing: Boolean): List<Pair<String, String>> = lis
         "that publishes no service shows as an address, which is all a ping " +
         "can tell you.",
     "IPv6" to
-        "Not swept. An on-link IPv6 prefix is a /64, so there is no list of " +
-        "addresses to walk, and the neighbour discovery IPv6 uses instead " +
-        "rides on multicast an app cannot read here.",
+        "Not swept — an on-link IPv6 prefix is a /64, so there is no list of " +
+        "addresses to walk. Instead the sweep sends one echo to ff02::1, the " +
+        "all-nodes group every IPv6 host must answer, and lists each reply. A " +
+        "host that filters ICMPv6 echo stays silent, as it does to the IPv4 sweep.",
     "With capture on" to
         if (capturing) {
             "This screen's own probes are protected out of the TUN, so they " +

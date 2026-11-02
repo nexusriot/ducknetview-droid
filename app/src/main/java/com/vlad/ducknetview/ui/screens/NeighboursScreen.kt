@@ -191,8 +191,8 @@ fun NeighboursScreen(
                     title = EMPTY_NEIGHBOURS_NO_V4,
                     message = "This link has no IPv4 prefix to sweep. An on-link IPv6 " +
                         "prefix is a /64 — eighteen quintillion addresses — so there is " +
-                        "nothing to walk, and the neighbour discovery IPv6 uses instead " +
-                        "needs multicast no app can read on Android.",
+                        "nothing to walk; on a dual-stack link the sweep asks IPv6 hosts " +
+                        "with one echo to ff02::1 instead.",
                     modifier = tableModifier.testTag(emptyTag(EMPTY_NEIGHBOURS_NO_V4)),
                 )
 

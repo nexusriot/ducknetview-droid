@@ -12,6 +12,18 @@ import com.vlad.ducknetview.data.ClosedConnRepository
 import com.vlad.ducknetview.data.DomainRepository
 import com.vlad.ducknetview.data.EventRepository
 import com.vlad.ducknetview.data.HostSeenRepository
+import com.vlad.ducknetview.data.ImportStore
+import com.vlad.ducknetview.data.db.MinuteDao
+import com.vlad.ducknetview.data.db.MinuteEntity
+import com.vlad.ducknetview.domain.events.FindingEvents
+import com.vlad.ducknetview.domain.firewall.AppPolicy
+import com.vlad.ducknetview.domain.firewall.Firewall
+import com.vlad.ducknetview.domain.firewall.FirewallRule
+import com.vlad.ducknetview.domain.firewall.LinkContext
+import com.vlad.ducknetview.domain.history.MinuteAccumulator
+import com.vlad.ducknetview.domain.history.MinuteSample
+import com.vlad.ducknetview.domain.model.Transport
+import com.vlad.ducknetview.domain.usage.AppBudgets
 import com.vlad.ducknetview.domain.alerts.AlertRules
 import com.vlad.ducknetview.domain.baseline.Baseline
 import com.vlad.ducknetview.domain.events.DomainEvents
@@ -45,6 +57,7 @@ import com.vlad.ducknetview.engine.api.UsageHistorySource
 import com.vlad.ducknetview.engine.vpn.VpnBridge
 import com.vlad.ducknetview.service.AlertDelivery
 import com.vlad.ducknetview.service.Notifications
+import com.vlad.ducknetview.service.RatesWidget
 import java.time.LocalDate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +92,8 @@ class EngineController(
     private val hostSeen: HostSeenRepository,
     private val domains: DomainRepository,
     private val rates: RateTracker,
+    private val minutes: MinuteDao,
+    private val imports: ImportStore,
 ) {
     private val totals = SessionTotals()
     private val rdns = RdnsCache()
@@ -86,6 +101,14 @@ class EngineController(
     private val eventEngine = EventEngine()
     private val alertRules = AlertRules()
     private val blockedEvents = BlockedEvents()
+    private val findingEvents = FindingEvents()
+    private val minuteAcc = MinuteAccumulator()
+
+    /** Uids past a blocking per-app budget this cycle; folded into the firewall. */
+    @Volatile private var overBudgetUids: Set<Int> = emptySet()
+    @Volatile private var cycleUsedByPackage: Map<String, Long> = emptyMap()
+    @Volatile private var cycleStartMillis: Long = 0L
+    private var widgetAt = 0L
 
     private val _snapshot = MutableStateFlow(NetSnapshot())
     val snapshot: StateFlow<NetSnapshot> = _snapshot.asStateFlow()
@@ -171,6 +194,7 @@ class EngineController(
         }
         registerScreenReceiver()
         watchEngineLifecycle()
+        watchImports()
         // Seed the session dedupe from the hosts already on record before the
         // first tick can report them, so a restart is not a burst of "first
         // contact" for hosts this device has talked to for weeks.
@@ -252,10 +276,59 @@ class EngineController(
         }
         baseline = Baseline(s.baseline.toSet(), s.baselineAt)
         watchlist = Watchlist(s.watchlist)
-        VpnBridge.setBlocked(s.blockedUids)
+        VpnBridge.tunMtu = s.tunMtu
+        recompileFirewall()
         VpnBridge.excludedPackages = s.excludedUids
             .mapNotNull { catalog.row(it).packageName.takeIf { p -> p.isNotEmpty() } }
             .toSet()
+    }
+
+    /**
+     * Rebuild the packet path's decision table from settings, the imported
+     * block list and the budget state. Package names become uids here, once,
+     * so the packet path never asks the package manager anything.
+     */
+    private fun recompileFirewall() {
+        val s = settings
+        val uidByPackage = runCatching { catalog.all().associate { it.packageName to it.uid } }
+            .getOrDefault(emptyMap())
+        VpnBridge.firewall = Firewall.compile(
+            rules = s.firewallRules.mapNotNull(FirewallRule::decode),
+            blocklist = if (s.blocklistEnabled) imports.blocklist.value else emptySet(),
+            policies = AppPolicy.decodeAll(s.appPolicies),
+            blockedUids = s.blockedUids,
+            budgetUids = overBudgetUids,
+            uidOf = uidByPackage::get,
+        )
+    }
+
+    /**
+     * The imported files load off the main thread at start, and either one
+     * changing re-labels or re-enforces without waiting for a settings write.
+     */
+    private fun watchImports() {
+        scope.launch {
+            runCatching { imports.load() }
+            runCatching { loadDay(System.currentTimeMillis()) }
+        }
+        scope.launch { imports.blocklist.collect { recompileFirewall() } }
+        scope.launch { imports.asn.collect { assembler.setAsn(it) } }
+    }
+
+    private suspend fun loadDay(now: Long) {
+        val from = now / MinuteAccumulator.MINUTE_MS - MinuteAccumulator.KEEP_MINUTES
+        val rows = minutes.since(from).map {
+            MinuteSample(it.minute, it.rxPeakBps, it.txPeakBps, it.rxBytes, it.txBytes)
+        }
+        assembler.setDay(MinuteAccumulator.series(rows, now))
+    }
+
+    private suspend fun recordMinute(sample: MinuteSample, now: Long) {
+        minutes.upsert(
+            MinuteEntity(sample.minute, sample.rxPeakBps, sample.txPeakBps, sample.rxBytes, sample.txBytes)
+        )
+        minutes.pruneBefore(sample.minute - MinuteAccumulator.KEEP_MINUTES)
+        loadDay(now)
     }
 
     fun refreshNow() {
@@ -353,13 +426,36 @@ class EngineController(
             settings = settings,
             baseline = baseline,
             watchlist = watchlist,
-            externalIp = externalIp.value,
+            // Off hides the address already fetched, not just the next fetch:
+            // a figure that is no longer refreshed would age on screen while
+            // the user believes the lookup is switched off.
+            externalIp = if (settings.externalIpEnabled) externalIp.value else null,
             externalIpAt = externalIp.fetchedAt,
             latency = latency,
             scanRunning = _scanning.value,
             neighbourScanRunning = _neighbourScanning.value,
         )
         _snapshot.value = snap
+
+        // Where a new connection would leave by, for per-app network policy.
+        // The default link while capturing is our own TUN, so this reads the
+        // link underneath it, as the flow labels do.
+        val under = LinkChoice.underlying(snap.networks)
+        VpnBridge.linkContext = LinkContext(
+            mobile = under?.transport == Transport.CELLULAR,
+            metered = under?.metered == true,
+            untrusted = snap.untrustedDefault,
+            screenOff = !interactive,
+        )
+
+        if (now - widgetAt >= WIDGET_INTERVAL_MS) {
+            widgetAt = now
+            runCatching { RatesWidget.render(context, snap, settings.rateUnit) }
+        }
+
+        minuteAcc.add(now, snap.total.rxBps, snap.total.txBps)?.let { closed ->
+            runCatching { recordMinute(closed, now) }
+        }
 
         if (flows != null) {
             val closed = flows.closedSnapshot()
@@ -391,8 +487,14 @@ class EngineController(
         produced += DomainEvents.of(freshDomains, watchlist, now)
         produced += blockedEvents.of(blocked, now)
         produced += alertRules.evaluate(snap, settings, now)
+        produced += findingEvents.of(snap, settings, now, cycleUsedByPackage, cycleStartMillis)
         record(produced)
         prevSnapshot = snap
+    }
+
+    /** Record an event produced outside the poll tick (automation, boot). */
+    fun log(event: Event) {
+        scope.launch { runCatching { record(listOf(event)) } }
     }
 
     /**
@@ -436,6 +538,7 @@ class EngineController(
             VpnBridge.running.collect { running ->
                 val was = reported
                 reported = running
+                runCatching { RatesWidget.render(context, _snapshot.value, settings.rateUnit) }
                 if (was == null || was == running) return@collect
                 val now = System.currentTimeMillis()
                 val event = when {
@@ -481,7 +584,10 @@ class EngineController(
         // app's "today" figure was 0 B however much it had moved.
         runCatching { usage.todayPerUid() }
             .onSuccess { assembler.setTodayUsage(it) }
+        runCatching { usage.todayBackgroundPerUid() }
+            .onSuccess { assembler.setBackgroundUsage(it) }
         refreshQuota()
+        refreshAppBudgets()
     }
 
     /**
@@ -513,6 +619,42 @@ class EngineController(
                 mobileOnly = s.quotaMobileOnly,
             )
         )
+    }
+
+    /**
+     * Each budgeted app's usage this cycle, and the uids a blocking budget
+     * now refuses. The cycle is the device budget's — one reset day for every
+     * allowance on the phone, which is how carriers bill.
+     */
+    private suspend fun refreshAppBudgets() {
+        val s = settings
+        val budgets = AppBudgets.decode(s.appBudgets)
+        if (budgets.isEmpty()) {
+            if (overBudgetUids.isNotEmpty()) {
+                overBudgetUids = emptySet()
+                recompileFirewall()
+            }
+            cycleUsedByPackage = emptyMap()
+            return
+        }
+        val start = usage.startOfDay(Quota.cycleStart(LocalDate.now(), s.cycleStartDay).toEpochDay())
+        val byUid = runCatching { usage.perUidSince(start, s.quotaMobileOnly) }.getOrNull() ?: return
+        val byPackage = HashMap<String, Long>()
+        for ((uid, bytes) in byUid) {
+            val pkg = catalog.row(uid).packageName
+            if (pkg.isNotEmpty()) byPackage[pkg] = (byPackage[pkg] ?: 0L) + bytes
+        }
+        cycleUsedByPackage = byPackage
+        cycleStartMillis = start
+        val uidByPackage = catalog.all().associate { it.packageName to it.uid }
+        val over = AppBudgets.breaches(budgets, byPackage)
+            .filter { it.first.block }
+            .mapNotNull { uidByPackage[it.first.packageName] }
+            .toSet()
+        if (over != overBudgetUids) {
+            overBudgetUids = over
+            recompileFirewall()
+        }
     }
 
     fun scanServices(onDone: (List<ServiceRow>) -> Unit) {
@@ -557,10 +699,10 @@ class EngineController(
             _neighbourScanning.value = true
             try {
                 val snap = _snapshot.value
-                val link = snap.networks.firstOrNull { it.isDefault && !it.isNoise }
-                    ?: snap.networks.firstOrNull { !it.isNoise }
+                val link = LinkChoice.sweepLink(snap.networks)
                 val subnet = link?.addresses?.let(Subnet::firstV4)
-                if (subnet == null) {
+                val hasV6 = link?.addresses?.any { it.contains(':') } == true
+                if (subnet == null && !hasV6) {
                     // An IPv6-only link, or one with nothing assigned. The
                     // screen explains it; recording the empty result is what
                     // lets it tell that apart from "never scanned".
@@ -574,13 +716,16 @@ class EngineController(
                     .toSet()
                 val rows = withContext(Dispatchers.IO) {
                     neighbours.scan(
-                        subnet = subnet,
-                        gateway = link.gateway,
+                        subnet = subnet ?: "",
+                        gateway = link?.gateway,
                         selfAddresses = selfAddresses,
+                        ifaceName = link?.ifaceName?.takeIf { hasV6 },
                     )
                 }
-                assembler.setNeighbours(rows, System.currentTimeMillis(), subnet)
-                onDone(rows, subnet)
+                val label = listOfNotNull(subnet, if (hasV6) "${NeighbourScanner.ALL_NODES} on ${link?.ifaceName}" else null)
+                    .joinToString(" + ")
+                assembler.setNeighbours(rows, System.currentTimeMillis(), label)
+                onDone(rows, label)
             } finally {
                 _neighbourScanning.value = false
             }
@@ -611,6 +756,9 @@ class EngineController(
         private const val INVALID_UID = -1
         private const val LATENCY_INTERVAL_MS = 15_000L
         private const val USAGE_INTERVAL_MS = 120_000L
+
+        /** A widget redraw is an IPC to the launcher; the shade gets 5 s, this 10. */
+        private const val WIDGET_INTERVAL_MS = 10_000L
         val BOOT_ELAPSED: Long get() = SystemClock.elapsedRealtime()
     }
 }

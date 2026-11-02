@@ -6,6 +6,7 @@ import com.vlad.ducknetview.data.DomainRepository
 import com.vlad.ducknetview.data.EventRepository
 import com.vlad.ducknetview.data.Exporter
 import com.vlad.ducknetview.data.HostSeenRepository
+import com.vlad.ducknetview.data.ImportStore
 import com.vlad.ducknetview.data.UsageRepository
 import com.vlad.ducknetview.data.db.DuckDatabase
 import com.vlad.ducknetview.data.settings.SettingsRepository
@@ -66,6 +67,7 @@ class DuckApp : Application() {
         val usageRepo = UsageRepository(db.usage())
         val hostSeenRepo = HostSeenRepository(db.hostsSeen())
         val domainRepo = DomainRepository(db.domains())
+        val imports = ImportStore(app)
 
         val engine = EngineController(
             context = app,
@@ -82,7 +84,20 @@ class DuckApp : Application() {
             hostSeen = hostSeenRepo,
             domains = domainRepo,
             rates = rates,
+            minutes = db.minutes(),
+            imports = imports,
         )
+
+        /**
+         * Settings reach the engine for the life of the process, not only
+         * while a screen is open. Capture can run with no Activity at all —
+         * started from the tile, at boot, or by the system's always-on VPN —
+         * and a firewall that was only loaded when the UI collected settings
+         * would enforce nothing in exactly those cases.
+         */
+        val engineSettings: Job = scope.launch {
+            settings.settings.collect { engine.applySettings(it) }
+        }
 
         val metricsServer = MetricsServer { engine.snapshot.value }
 

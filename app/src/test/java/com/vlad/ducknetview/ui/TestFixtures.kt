@@ -263,6 +263,22 @@ class FakeActions : UiActions {
     override fun requestWifiPermission() = record("requestWifiPermission")
     override fun dismissStatus() = record("dismissStatus")
 
+    override fun terminateConnection(key: String) = record("terminateConnection", key)
+    override fun addFirewallRule(pattern: String, packageName: String) = record("addFirewallRule", "$packageName|$pattern")
+    override fun removeFirewallRule(rule: com.vlad.ducknetview.domain.firewall.FirewallRule) = record("removeFirewallRule", rule)
+    override fun setAppPolicy(policy: com.vlad.ducknetview.domain.firewall.AppPolicy) = record("setAppPolicy", policy)
+    override fun setAppBudget(packageName: String, capBytes: Long, block: Boolean) = record("setAppBudget", "$packageName|$capBytes|$block")
+    override fun removeAppBudget(packageName: String) = record("removeAppBudget", packageName)
+    override fun importBlocklist() = record("importBlocklist", null)
+    override fun clearBlocklist() = record("clearBlocklist", null)
+    override fun importAsn() = record("importAsn", null)
+    override fun clearAsn() = record("clearAsn", null)
+    override fun saveView(name: String) = record("saveView", name)
+    override fun applyView(name: String) = record("applyView", name)
+    override fun deleteView(name: String) = record("deleteView", name)
+    override fun compareSnapshot() = record("compareSnapshot", null)
+    override fun closeDiff() = record("closeDiff", null)
+
     var openSnapshotCount = 0
     override fun openSnapshot() { openSnapshotCount++ }
     var closeSnapshotCount = 0

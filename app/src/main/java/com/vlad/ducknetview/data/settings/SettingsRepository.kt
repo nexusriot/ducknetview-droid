@@ -100,6 +100,15 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         val autoScanOnUntrusted = booleanPreferencesKey("autoScanOnUntrusted")
         val alertsAckedAt = longPreferencesKey("alertsAckedAt")
         val onboardingShown = booleanPreferencesKey("onboardingShown")
+        val startOnBoot = booleanPreferencesKey("startOnBoot")
+        val alertBackgroundBytes = longPreferencesKey("alertBackgroundBytes")
+        val firewallRules = stringPreferencesKey("firewallRules")
+        val appPolicies = stringPreferencesKey("appPolicies")
+        val blocklistEnabled = booleanPreferencesKey("blocklistEnabled")
+        val savedViews = stringPreferencesKey("savedViews")
+        val tunMtu = intPreferencesKey("tunMtu")
+        val appBudgets = stringPreferencesKey("appBudgets")
+        val automationEnabled = booleanPreferencesKey("automationEnabled")
     }
 
     private fun decode(p: Preferences): AppSettings {
@@ -161,6 +170,15 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
             autoScanOnUntrusted = p.bool(Keys.autoScanOnUntrusted, d.autoScanOnUntrusted),
             alertsAckedAt = p.long(Keys.alertsAckedAt, d.alertsAckedAt),
             onboardingShown = p.bool(Keys.onboardingShown, d.onboardingShown),
+            startOnBoot = p.bool(Keys.startOnBoot, d.startOnBoot),
+            alertBackgroundBytes = p.long(Keys.alertBackgroundBytes, d.alertBackgroundBytes),
+            firewallRules = p.parsed(Keys.firewallRules, d.firewallRules, Codec::decodeList),
+            appPolicies = p.parsed(Keys.appPolicies, d.appPolicies, Codec::decodeStringSet),
+            blocklistEnabled = p.bool(Keys.blocklistEnabled, d.blocklistEnabled),
+            savedViews = p.parsed(Keys.savedViews, d.savedViews, Codec::decodeList),
+            tunMtu = p.int(Keys.tunMtu, d.tunMtu).takeIf { it in AppSettings.MTU_STEPS } ?: d.tunMtu,
+            appBudgets = p.parsed(Keys.appBudgets, d.appBudgets, Codec::decodeStringSet),
+            automationEnabled = p.bool(Keys.automationEnabled, d.automationEnabled),
         )
     }
 
@@ -214,6 +232,15 @@ class SettingsRepository(private val store: DataStore<Preferences>) {
         p[Keys.autoScanOnUntrusted] = s.autoScanOnUntrusted
         p[Keys.alertsAckedAt] = s.alertsAckedAt
         p[Keys.onboardingShown] = s.onboardingShown
+        p[Keys.startOnBoot] = s.startOnBoot
+        p[Keys.alertBackgroundBytes] = s.alertBackgroundBytes
+        p[Keys.firewallRules] = Codec.encodeList(s.firewallRules)
+        p[Keys.appPolicies] = Codec.encodeStringSet(s.appPolicies)
+        p[Keys.blocklistEnabled] = s.blocklistEnabled
+        p[Keys.savedViews] = Codec.encodeList(s.savedViews)
+        p[Keys.tunMtu] = s.tunMtu
+        p[Keys.appBudgets] = Codec.encodeStringSet(s.appBudgets)
+        p[Keys.automationEnabled] = s.automationEnabled
     }
 
     private companion object {

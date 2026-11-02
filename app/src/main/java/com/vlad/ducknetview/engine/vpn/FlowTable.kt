@@ -42,6 +42,13 @@ class Flow(
     @Volatile var network: String = ""
     @Volatile var blocked: Boolean = false
 
+    /** Why the firewall refused or cut this flow; empty when it did not. */
+    @Volatile var blockReason: String = ""
+
+    /** The negotiated TLS version's label, read off the ServerHello. */
+    @Volatile var tls: String = ""
+    @Volatile var tlsDeprecated: Boolean = false
+
     fun touch(at: Long) {
         lastSeen = at
     }
@@ -157,6 +164,9 @@ class FlowTable(private val closedLimit: Int = 200) {
         isNew = isNew,
         watchlisted = watchlisted,
         blocked = f.blocked,
+        blockReason = f.blockReason,
+        tls = f.tls,
+        tlsDeprecated = f.tlsDeprecated,
     )
 
     val size: Int get() = flows.size

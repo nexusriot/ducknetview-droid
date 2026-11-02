@@ -31,6 +31,15 @@ object LinkChoice {
      * than its name — the address another machine can reach this device on,
      * for instance, which is never the tunnel's.
      */
+    /**
+     * The link a LAN sweep should walk: the one under the tunnel, never the
+     * tunnel. While capturing, the default network is this app's own TUN, and
+     * picking "the default link" swept `10.215.173.1/30` and sent the IPv6
+     * all-nodes echo out of `tun0` — two addresses that are both this device.
+     */
+    fun sweepLink(networks: List<NetworkRow>): NetworkRow? =
+        underlying(networks.filter { !it.isNoise })
+
     fun underlying(networks: List<NetworkRow>): NetworkRow? {
         val candidates = networks.filter { it.transport != Transport.VPN && it.ifaceName.isNotEmpty() }
         if (candidates.isEmpty()) return null

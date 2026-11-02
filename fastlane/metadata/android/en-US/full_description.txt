@@ -1,0 +1,7 @@
+ducknetview shows what the phone's network is doing: live connections with exact per-connection bytes and round-trip time, which app owns each one, the names they asked for (from DNS, TLS and QUIC handshakes), this device's own listening services, other hosts on the LAN, and daily data usage with a budget.
+
+Capture is a VPN that terminates on the device itself; what it sees never leaves the phone, and packet contents are relayed and counted, never stored. The only lookup made by default is one external-IP request, which can be switched off. Without capture the app still works from the public network APIs.
+
+Also: a per-app firewall with domain, address and block-list rules and network policies (mobile, metered, untrusted, screen off); per-app data allowances; cleartext and deprecated-TLS flagging; a change log with alerts delivered by notification, webhook or broadcast; a Prometheus endpoint; snapshot export, viewing and comparison; saved views; a home-screen widget and a Quick Settings tile.
+
+No root, no account, no ads, no analytics.

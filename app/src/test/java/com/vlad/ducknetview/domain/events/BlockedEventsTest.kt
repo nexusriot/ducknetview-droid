@@ -36,6 +36,12 @@ class BlockedEventsTest {
     )
 
     @Test
+    fun `the line says which rule or policy refused`() {
+        val out = events.of(listOf(attempt().copy(reason = "blocked while the screen is off")), now = 1_000L)
+        assertTrue(out.single().detail.endsWith("· blocked while the screen is off"))
+    }
+
+    @Test
     fun `the first refusal is reported at once`() {
         // The user has just pressed Block and is looking at the screen; making
         // them wait out the suppression window for the first confirmation

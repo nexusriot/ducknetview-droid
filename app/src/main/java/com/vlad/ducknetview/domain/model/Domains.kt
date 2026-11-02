@@ -63,6 +63,10 @@ data class DomainRow(
     val lastSeen: Long = 0L,
     val addresses: List<String> = emptyList(),
     val watchlisted: Boolean = false,
+    /** The name, or a parent of it, is on the imported block list. */
+    val listed: Boolean = false,
+    /** A firewall rule refuses this name, for every app or for this one. */
+    val blocked: Boolean = false,
 ) {
     /** Stable identity: the same name asked for by two apps is two rows. */
     val key: String get() = "$name|$uid"
