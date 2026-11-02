@@ -10,6 +10,8 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,6 +48,9 @@ class MetricsServer(private val snapshotProvider: () -> NetSnapshot) {
     @Volatile private var server: ServerSocket? = null
     @Volatile private var job: Job? = null
     @Volatile private var port: Int? = null
+
+    /** Held by the accept loop only while it is blocked in accept(). */
+    private val inAccept = ReentrantLock()
 
     /** The port actually bound, which differs from the requested one for port 0. */
     val boundPort: Int? get() = port
@@ -117,6 +122,13 @@ class MetricsServer(private val snapshotProvider: () -> NetSnapshot) {
         // Closing the listening socket releases the port at once and makes the
         // blocked accept() throw, which is how the loop learns to finish.
         runCatching { socket?.close() }
+        // ...but not quite: Linux keeps a listening socket alive while a thread
+        // is still inside accept() on it, and the JDK wakes that thread with an
+        // asynchronous signal. Until it leaves, a restart on the same port gets
+        // a BindException, so wait for it — briefly, it is already on its way.
+        runCatching {
+            if (inAccept.tryLock(ACCEPT_EXIT_WAIT_MS, TimeUnit.MILLISECONDS)) inAccept.unlock()
+        }
         job?.cancel()
         job = null
     }
@@ -129,7 +141,12 @@ class MetricsServer(private val snapshotProvider: () -> NetSnapshot) {
     private fun acceptLoop(socket: ServerSocket) {
         while (!socket.isClosed) {
             val client = try {
-                socket.accept()
+                inAccept.lock()
+                try {
+                    socket.accept()
+                } finally {
+                    inAccept.unlock()
+                }
             } catch (e: IOException) {
                 return
             }
@@ -260,6 +277,7 @@ class MetricsServer(private val snapshotProvider: () -> NetSnapshot) {
         private const val HTML = "text/html; charset=utf-8"
         private const val BACKLOG = 4
         private const val READ_TIMEOUT_MS = 5_000
+        private const val ACCEPT_EXIT_WAIT_MS = 1_000L
         private const val MAX_REQUEST_LINE = 8 * 1024
         private const val MAX_HEADER_BYTES = 64 * 1024
 
